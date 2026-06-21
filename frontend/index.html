@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AeroFreight AI — Cargo Manifest Intake</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@400;500;600;700;800;900&family=Big+Shoulders+Stencil+Display:wght@600;700;800&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,400&display=swap" rel="stylesheet" />
+<style>
+/* ============================================================ *
+ *  AeroFreight AI — Night-Terminal Air Waybill Intake
+ *  A single-file, dependency-free shipment intake form that
+ *  composes a ShipmentRequest for the orchestrator swarm.
+ * ============================================================ */
+
+:root{
+  --ink:        #080b13;
+  --ink-1:      #0b1019;
+  --ink-2:      #0f1626;
+  --ink-3:      #15203a;
+  --hair:       rgba(255,236,200,.09);
+  --hair-2:     rgba(255,236,200,.16);
+
+  --amber:      #ffb000;
+  --amber-soft: #ffce6a;
+  --amber-deep: #c87f00;
+  --amber-glow: rgba(255,176,0,.30);
+
+  --radar:      #46e4a8;   /* signal green */
+  --radar-dim:  #1d6b51;
+
+  --paper:      #e9dfc6;   /* air-waybill cream */
+  --paper-2:    #ddd0b0;
+  --paper-edge: #c8b98f;
+  --paper-line: #c3b58f;
+  --paper-ink:  #232a22;
+  --stamp:      #bb3a2a;   /* rubber-stamp red */
+
+  --text:       #ece6d6;
+  --text-dim:   #8b95ab;
+  --text-faint: #5a6178;
+
+  --speed:      var(--amber);
+  --cost:       var(--radar);
+
+  --shadow-lift: 0 30px 70px -28px rgba(0,0,0,.85);
+  --ease: cubic-bezier(.22,.61,.36,1);
+}
+
+*{ box-sizing:border-box; margin:0; padding:0; }
+html{ -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
+
+body{
+  font-family:"DM Mono", ui-monospace, monospace;
+  background:var(--ink);
+  color:var(--text);
+  min-height:100vh;
+  overflow-x:hidden;
+  position:relative;
+  line-height:1.45;
+}
+
+/* ----- Atmosphere: radar grid + runway glow + grain + scan ---- */
+.atmos{ position:fixed; inset:0; z-index:0; pointer-events:none; overflow:hidden; }
+.atmos .grid{
+  position:absolute; inset:-2px;
+  background-image:
+    linear-gradient(var(--hair) 1px, transparent 1px),
+    linear-gradient(90deg, var(--hair) 1px, transparent 1px);
+  background-size:46px 46px;
+  mask-image:radial-gradient(120% 90% at 50% 0%, #000 30%, transparent 78%);
+  opacity:.6;
+}
+.atmos .glow-a{
+  position:absolute; width:140vw; height:60vh; left:-20vw; top:-22vh;
+  background:radial-gradient(50% 50% at 50% 50%, var(--amber-glow), transparent 70%);
+  filter:blur(20px);
+}
+.atmos .glow-b{
+  position:absolute; width:60vw; height:50vh; right:-18vw; bottom:-18vh;
+  background:radial-gradient(50% 50% at 50% 50%, rgba(70,228,168,.12), transparent 70%);
+  filter:blur(24px);
+}
+.atmos .sweep{
+  position:absolute; left:50%; top:-30vh; width:90vh; height:90vh;
+  margin-left:-45vh;
+  background:conic-gradient(from 0deg, transparent 0 84%, rgba(70,228,168,.10) 92%, transparent 100%);
+  border-radius:50%;
+  animation:sweep 14s linear infinite;
+  opacity:.5;
+}
+@keyframes sweep{ to{ transform:rotate(360deg); } }
+.grain{
+  position:fixed; inset:0; z-index:60; pointer-events:none; opacity:.05; mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.scan{
+  position:fixed; inset:0; z-index:61; pointer-events:none; opacity:.35;
+  background:repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0 1px, transparent 1px 3px);
+  mix-blend-mode:multiply;
+}
+
+/* --------------------------- Shell --------------------------- */
+.shell{ position:relative; z-index:1; max-width:1240px; margin:0 auto; padding:30px 30px 80px; }
+
+/* --------------------------- Header -------------------------- */
+header{
+  display:flex; align-items:flex-end; justify-content:space-between; gap:24px;
+  padding-bottom:18px; border-bottom:1px solid var(--hair-2);
+  opacity:0; animation:rise .7s var(--ease) .05s forwards;
+}
+.brand{ display:flex; align-items:center; gap:16px; }
+.roundel{
+  width:46px; height:46px; flex:none; position:relative; border-radius:50%;
+  background:
+     radial-gradient(circle at 50% 50%, var(--amber) 0 22%, transparent 23% 40%, var(--amber) 41% 54%, var(--ink) 55%);
+  box-shadow:0 0 0 1px var(--amber-deep), 0 0 24px var(--amber-glow);
+}
+.roundel::after{
+  content:""; position:absolute; inset:0; border-radius:50%;
+  background:conic-gradient(from -50deg, transparent 0 60%, rgba(8,11,19,.85) 60% 100%);
+}
+.wordmark{ line-height:1; }
+.wordmark .name{
+  font-family:"Big Shoulders Stencil Display", "Big Shoulders Display", sans-serif;
+  font-weight:800; font-size:30px; letter-spacing:.06em; color:var(--text);
+}
+.wordmark .name b{ color:var(--amber); }
+.wordmark .sub{
+  font-size:10.5px; letter-spacing:.42em; color:var(--text-dim); text-transform:uppercase; margin-top:5px;
+}
+.status{ text-align:right; font-size:11px; color:var(--text-dim); letter-spacing:.12em; }
+.status .row{ display:flex; gap:8px; align-items:center; justify-content:flex-end; }
+.status .dot{ width:7px; height:7px; border-radius:50%; background:var(--radar); box-shadow:0 0 10px var(--radar); animation:blink 2.4s steps(1) infinite; }
+@keyframes blink{ 0%,70%{opacity:1} 71%,100%{opacity:.25} }
+.status .clk{ font-size:18px; color:var(--text); letter-spacing:.16em; font-weight:500; }
+
+/* -------------------------- Stepper -------------------------- */
+.flightpath{
+  position:relative; margin:30px 0 26px; padding:0 6px;
+  opacity:0; animation:rise .7s var(--ease) .14s forwards;
+}
+.flightpath .track{
+  position:absolute; left:5%; right:5%; top:21px; height:2px;
+  background:repeating-linear-gradient(90deg, var(--hair-2) 0 9px, transparent 9px 18px);
+}
+.flightpath .lit{
+  position:absolute; left:5%; top:21px; height:2px; background:var(--amber);
+  box-shadow:0 0 12px var(--amber-glow); transition:width .6s var(--ease);
+}
+.waypoints{ position:relative; display:grid; grid-template-columns:repeat(4,1fr); }
+.wp{ display:flex; flex-direction:column; align-items:center; gap:10px; background:transparent; border:0; cursor:pointer; color:inherit; font-family:inherit; }
+.wp .node{
+  width:44px; height:44px; border-radius:50%; display:grid; place-items:center;
+  background:var(--ink-2); border:1.5px solid var(--hair-2); color:var(--text-dim);
+  font-family:"Big Shoulders Display",sans-serif; font-weight:800; font-size:19px;
+  transition:.45s var(--ease); position:relative;
+}
+.wp .label{ font-size:10px; letter-spacing:.26em; color:var(--text-dim); text-transform:uppercase; transition:.4s; }
+.wp[data-state="done"] .node{ border-color:var(--radar-dim); color:var(--radar); }
+.wp[data-state="done"] .node::after{ content:"✓"; }
+.wp[data-state="done"] .node span{ display:none; }
+.wp[data-state="active"] .node{
+  border-color:var(--amber); color:var(--ink); background:var(--amber);
+  box-shadow:0 0 0 5px var(--amber-glow), 0 0 26px var(--amber-glow);
+  transform:scale(1.05);
+}
+.wp[data-state="active"] .label{ color:var(--amber); }
+.wp .plane{
+  position:absolute; top:-26px; font-size:15px; color:var(--amber); opacity:0;
+  transition:.4s; filter:drop-shadow(0 0 6px var(--amber-glow));
+}
+.wp[data-state="active"] .plane{ opacity:1; animation:hover 2.6s ease-in-out infinite; }
+@keyframes hover{ 50%{ transform:translateY(-3px); } }
+
+/* --------------------------- Layout -------------------------- */
+.deck{
+  display:grid; grid-template-columns:1.04fr .96fr; gap:34px; align-items:start;
+}
+.panel{
+  background:linear-gradient(180deg, rgba(21,32,58,.55), rgba(11,16,25,.6));
+  border:1px solid var(--hair-2); border-radius:6px; padding:30px 30px 26px;
+  position:relative; box-shadow:var(--shadow-lift); backdrop-filter:blur(4px);
+  opacity:0; animation:rise .7s var(--ease) .22s forwards;
+}
+.panel::before{
+  content:""; position:absolute; left:0; top:18px; bottom:18px; width:3px;
+  background:linear-gradient(var(--amber), transparent); border-radius:3px;
+}
+.corner{ position:absolute; width:13px; height:13px; border:1.5px solid var(--amber-deep); opacity:.5; }
+.corner.tr{ top:9px; right:9px; border-left:0; border-bottom:0; }
+.corner.bl{ bottom:9px; left:9px; border-right:0; border-top:0; }
+
+.step-head{ display:flex; align-items:baseline; gap:14px; margin-bottom:4px; }
+.step-head .idx{
+  font-family:"Big Shoulders Display",sans-serif; font-weight:800; font-size:13px;
+  color:var(--amber); letter-spacing:.2em;
+}
+.step-head h2{
+  font-family:"Big Shoulders Display",sans-serif; font-weight:800; font-size:38px;
+  letter-spacing:.02em; text-transform:uppercase; line-height:.95; color:var(--text);
+}
+.step-sub{ font-size:11.5px; color:var(--text-dim); letter-spacing:.04em; margin:8px 0 24px; max-width:42ch; }
+
+.steps{ position:relative; }
+.stage{ display:none; animation:swap .5s var(--ease); }
+.stage.on{ display:block; }
+@keyframes swap{ from{ opacity:0; transform:translateX(14px); } to{ opacity:1; transform:none; } }
+
+/* --------------------------- Fields -------------------------- */
+.grp-label{
+  font-size:10px; letter-spacing:.3em; text-transform:uppercase; color:var(--amber-soft);
+  display:flex; align-items:center; gap:9px; margin:20px 0 13px;
+}
+.grp-label::before{ content:""; width:14px; height:1px; background:var(--amber-deep); }
+.grp-label .n{ color:var(--text-faint); margin-left:auto; letter-spacing:.18em; }
+
+.row{ display:grid; gap:14px; }
+.row.r3{ grid-template-columns:.8fr 1fr 1.2fr; }
+.row.r2{ grid-template-columns:1fr 1fr; }
+
+.field{ position:relative; }
+.field label{
+  display:block; font-size:9.5px; letter-spacing:.24em; text-transform:uppercase;
+  color:var(--text-dim); margin-bottom:7px;
+}
+.field input, .field select{
+  width:100%; background:rgba(8,11,19,.6); color:var(--text);
+  border:1px solid var(--hair-2); border-bottom:1.5px solid var(--hair-2);
+  border-radius:3px 3px 0 0; padding:12px 13px; font-family:inherit; font-size:14px;
+  letter-spacing:.04em; transition:.25s var(--ease); outline:none;
+}
+.field input::placeholder{ color:#444c61; letter-spacing:.06em; }
+.field input:focus, .field select:focus{
+  border-color:var(--amber); border-bottom-color:var(--amber);
+  background:rgba(255,176,0,.05); box-shadow:0 6px 22px -14px var(--amber-glow);
+}
+.field.bad input, .field.bad select{ border-color:var(--stamp); border-bottom-color:var(--stamp); }
+.field .unit{
+  position:absolute; right:12px; bottom:12px; font-size:11px; color:var(--text-dim);
+  letter-spacing:.1em; pointer-events:none;
+}
+.field .pre{
+  position:absolute; left:13px; bottom:12px; font-size:14px; color:var(--amber-soft); pointer-events:none;
+}
+.field.pre input{ padding-left:26px; }
+select{ appearance:none; -webkit-appearance:none; cursor:pointer;
+  background-image:linear-gradient(45deg,transparent 50%,var(--amber-soft) 50%),linear-gradient(135deg,var(--amber-soft) 50%,transparent 50%);
+  background-position:calc(100% - 16px) 18px,calc(100% - 11px) 18px; background-size:5px 5px,5px 5px; background-repeat:no-repeat; }
+
+/* great-circle mini between origin/dest */
+.gc{ display:flex; align-items:center; gap:12px; margin:18px 2px 2px; color:var(--text-dim); font-size:10.5px; letter-spacing:.2em; }
+.gc .line{ flex:1; height:1px; background:repeating-linear-gradient(90deg,var(--hair-2) 0 6px,transparent 6px 12px); position:relative; }
+.gc .line::after{ content:"✈"; position:absolute; left:0; top:50%; transform:translateY(-50%); color:var(--amber); animation:fly 5s var(--ease) infinite; }
+@keyframes fly{ 0%{left:0;opacity:0} 12%{opacity:1} 88%{opacity:1} 100%{left:100%;opacity:0} }
+
+/* ---------------------------- Cargo -------------------------- */
+.items{ display:flex; flex-direction:column; gap:11px; }
+.item{
+  display:grid; grid-template-columns:1.5fr .6fr 1fr 34px; gap:11px; align-items:end;
+  padding:13px 13px 14px; border:1px solid var(--hair); border-radius:5px;
+  background:rgba(8,11,19,.4); position:relative; animation:dropin .42s var(--ease);
+}
+@keyframes dropin{ from{ opacity:0; transform:translateY(-8px) scale(.99); } to{ opacity:1; transform:none; } }
+.item.out{ animation:dropout .3s var(--ease) forwards; }
+@keyframes dropout{ to{ opacity:0; transform:translateX(20px); height:0; padding-top:0; padding-bottom:0; margin-bottom:-11px; } }
+.item .tag{ position:absolute; top:-7px; left:12px; font-size:8.5px; letter-spacing:.22em; color:var(--text-faint); background:var(--ink-1); padding:0 6px; }
+.kill{
+  width:34px; height:42px; border:1px solid var(--hair-2); background:transparent; color:var(--text-dim);
+  border-radius:3px; cursor:pointer; font-size:16px; transition:.2s; align-self:end;
+}
+.kill:hover{ border-color:var(--stamp); color:var(--stamp); background:rgba(187,58,42,.08); }
+.additem{
+  margin-top:14px; width:100%; padding:13px; cursor:pointer;
+  background:transparent; color:var(--amber-soft); border:1px dashed var(--amber-deep); border-radius:5px;
+  font-family:inherit; font-size:11px; letter-spacing:.24em; text-transform:uppercase; transition:.25s;
+}
+.additem:hover{ background:rgba(255,176,0,.07); color:var(--amber); border-style:solid; }
+.tally{ display:flex; gap:22px; margin-top:16px; font-size:10.5px; letter-spacing:.16em; color:var(--text-dim); }
+.tally b{ color:var(--amber); font-weight:500; }
+
+/* ---------------------------- Specs -------------------------- */
+.gauge{ margin-bottom:6px; }
+.gauge .big{
+  font-family:"Big Shoulders Display",sans-serif; font-weight:800; font-size:30px;
+  color:var(--text); letter-spacing:.03em;
+}
+.gauge .big small{ font-size:13px; color:var(--text-dim); font-weight:500; letter-spacing:.12em; }
+input[type=range]{ -webkit-appearance:none; width:100%; height:3px; background:var(--hair-2); border-radius:3px; margin-top:14px; outline:none; }
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none; width:16px; height:24px; border-radius:3px; cursor:pointer;
+  background:linear-gradient(var(--amber-soft),var(--amber-deep)); box-shadow:0 0 14px var(--amber-glow);
+}
+input[type=range]::-moz-range-thumb{ width:16px; height:24px; border:0; border-radius:3px; background:var(--amber); box-shadow:0 0 14px var(--amber-glow); cursor:pointer; }
+.density{ margin-top:18px; padding:12px 14px; border:1px solid var(--hair); border-radius:5px; background:rgba(70,228,168,.04); font-size:10.5px; letter-spacing:.1em; color:var(--text-dim); display:flex; justify-content:space-between; }
+.density b{ color:var(--radar); }
+
+/* -------------------------- Priority ------------------------- */
+.throttle{ display:grid; grid-template-columns:1fr 1fr; gap:0; border:1px solid var(--hair-2); border-radius:6px; overflow:hidden; position:relative; margin-bottom:8px; }
+.throttle .knob{
+  position:absolute; top:0; bottom:0; width:50%; left:0; z-index:0;
+  background:linear-gradient(180deg, rgba(255,176,0,.16), rgba(255,176,0,.05));
+  border-right:1.5px solid var(--amber); transition:.45s var(--ease);
+}
+.throttle[data-mode="COST"] .knob{ left:50%; border-right:0; border-left:1.5px solid var(--radar);
+  background:linear-gradient(180deg, rgba(70,228,168,.16), rgba(70,228,168,.05)); }
+.opt{ position:relative; z-index:1; padding:22px 20px; cursor:pointer; text-align:left; }
+.opt .k{ font-family:"Big Shoulders Display",sans-serif; font-weight:800; font-size:28px; letter-spacing:.04em; color:var(--text-dim); transition:.3s; }
+.opt .d{ font-size:10px; letter-spacing:.06em; color:var(--text-faint); margin-top:6px; line-height:1.5; }
+.opt .m{ font-size:9px; letter-spacing:.2em; text-transform:uppercase; margin-top:9px; color:var(--text-faint); }
+.throttle[data-mode="SPEED"] .opt.speed .k{ color:var(--amber); text-shadow:0 0 24px var(--amber-glow); }
+.throttle[data-mode="COST"]  .opt.cost  .k{ color:var(--radar); text-shadow:0 0 24px rgba(70,228,168,.4); }
+
+.review{ margin-top:22px; border-top:1px dashed var(--hair-2); padding-top:18px; }
+.review h3{ font-size:10px; letter-spacing:.3em; text-transform:uppercase; color:var(--text-dim); margin-bottom:14px; }
+.rgrid{ display:grid; grid-template-columns:1fr 1fr; gap:11px 22px; font-size:11px; }
+.rgrid .li{ display:flex; justify-content:space-between; gap:10px; padding-bottom:9px; border-bottom:1px solid var(--hair); }
+.rgrid .li span{ color:var(--text-dim); letter-spacing:.1em; }
+.rgrid .li b{ color:var(--text); font-weight:500; text-align:right; }
+
+/* ----------------------------- Nav --------------------------- */
+.nav{ display:flex; justify-content:space-between; align-items:center; gap:14px; margin-top:30px; }
+.btn{ font-family:"Big Shoulders Display",sans-serif; font-weight:700; letter-spacing:.14em; text-transform:uppercase;
+  cursor:pointer; border-radius:4px; transition:.25s var(--ease); border:1px solid var(--hair-2); }
+.btn.ghost{ background:transparent; color:var(--text-dim); padding:13px 22px; font-size:14px; }
+.btn.ghost:hover{ color:var(--text); border-color:var(--hair-2); background:rgba(255,255,255,.03); }
+.btn.ghost:disabled{ opacity:.25; cursor:not-allowed; }
+.btn.go{
+  background:linear-gradient(180deg,var(--amber-soft),var(--amber)); color:var(--ink); border-color:var(--amber-deep);
+  padding:14px 30px; font-size:16px; box-shadow:0 14px 34px -16px var(--amber-glow);
+}
+.btn.go:hover{ transform:translateY(-1px); box-shadow:0 18px 40px -16px var(--amber-glow); }
+.btn.go .ar{ margin-left:9px; transition:.25s; display:inline-block; }
+.btn.go:hover .ar{ transform:translateX(4px); }
+.btn.dispatch{ background:var(--ink); color:var(--radar); border:1.5px solid var(--radar-dim);
+  padding:14px 30px; font-size:16px; box-shadow:0 0 30px -10px rgba(70,228,168,.5); }
+.btn.dispatch:hover{ background:rgba(70,228,168,.08); border-color:var(--radar); }
+
+/* ===================== Air Waybill preview ==================== */
+.awb-wrap{ position:sticky; top:24px; opacity:0; animation:rise .8s var(--ease) .32s forwards; }
+.awb{
+  background:
+    linear-gradient(125deg, var(--paper) 0%, var(--paper-2) 100%);
+  color:var(--paper-ink); border-radius:4px; position:relative;
+  box-shadow:var(--shadow-lift), inset 0 0 60px rgba(120,100,60,.12);
+  font-family:"DM Mono", monospace; overflow:hidden;
+}
+.awb::after{ /* paper grain */
+  content:""; position:absolute; inset:0; pointer-events:none; opacity:.5; mix-blend-mode:multiply;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='p'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23p)' opacity='0.45'/%3E%3C/svg%3E");
+}
+.awb .perf{ height:14px; background:radial-gradient(circle at 7px 50%, var(--ink) 0 4px, transparent 4.5px); background-size:18px 14px; background-position:center; }
+.awb .perf.top{ border-bottom:2px dashed var(--paper-edge); }
+.awb-body{ padding:20px 24px 24px; position:relative; z-index:1; }
+
+.awb-head{ display:flex; justify-content:space-between; align-items:flex-start; border-bottom:2px solid var(--paper-ink); padding-bottom:12px; }
+.awb-head .t .o{ font-family:"Big Shoulders Display",sans-serif; font-weight:800; font-size:22px; letter-spacing:.04em; line-height:1; }
+.awb-head .t .o b{ color:var(--stamp); }
+.awb-head .t .s{ font-size:8.5px; letter-spacing:.28em; color:#6c6750; margin-top:5px; }
+.awb-no{ text-align:right; }
+.awb-no .lab{ font-size:7.5px; letter-spacing:.24em; color:#6c6750; }
+.awb-no .num{ font-family:"Big Shoulders Display",sans-serif; font-weight:700; font-size:21px; letter-spacing:.06em; color:var(--paper-ink); }
+
+/* split-flap route board */
+.board{ margin:18px 0 6px; background:#14110c; border-radius:4px; padding:14px 14px 12px; box-shadow:inset 0 2px 10px rgba(0,0,0,.7); }
+.board .lane{ display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.flaps{ display:flex; gap:3px; }
+.flap{
+  width:24px; height:34px; display:grid; place-items:center; border-radius:2px;
+  font-family:"Big Shoulders Display",sans-serif; font-weight:800; font-size:23px; color:#ffd884;
+  background:linear-gradient(180deg,#2a2418 0 50%, #1c1810 50% 100%);
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.5); position:relative; overflow:hidden;
+}
+.flap::after{ content:""; position:absolute; left:0; right:0; top:50%; height:1px; background:rgba(0,0,0,.6); }
+.flap.spin{ animation:flip .09s linear; }
+@keyframes flip{ 0%{ transform:scaleY(.4); filter:brightness(1.6); } 100%{ transform:scaleY(1); } }
+.board .arrow{ color:var(--stamp); font-size:18px; }
+.board .cities{ display:flex; justify-content:space-between; margin-top:9px; font-size:8.5px; letter-spacing:.18em; color:#9a8f6f; }
+
+.awb-grid{ display:grid; grid-template-columns:1fr 1fr; gap:0; margin-top:14px; border:1px solid var(--paper-line); }
+.cell{ padding:9px 11px; border-right:1px solid var(--paper-line); border-bottom:1px solid var(--paper-line); }
+.cell:nth-child(2n){ border-right:0; }
+.cell .l{ font-size:7.5px; letter-spacing:.2em; color:#7a745c; text-transform:uppercase; }
+.cell .v{ font-family:"Big Shoulders Display",sans-serif; font-weight:700; font-size:19px; letter-spacing:.02em; margin-top:3px; color:var(--paper-ink); }
+.cell .v small{ font-size:10px; color:#6c6750; font-family:"DM Mono",monospace; font-weight:400; }
+.cell.full{ grid-column:1/-1; border-right:0; }
+.cell .mani{ font-size:10px; line-height:1.7; color:#3a3a2e; min-height:18px; }
+.cell .mani em{ font-style:normal; color:var(--stamp); }
+
+.barcode{ margin-top:16px; height:42px; background:
+   repeating-linear-gradient(90deg, var(--paper-ink) 0 2px, transparent 2px 4px, var(--paper-ink) 4px 5px, transparent 5px 9px, var(--paper-ink) 9px 12px, transparent 12px 14px);
+   opacity:.86; }
+.barcode + .bc-no{ text-align:center; font-size:9px; letter-spacing:.5em; color:#6c6750; margin-top:5px; }
+
+/* priority rubber stamp */
+.stampmark{
+  position:absolute; right:18px; bottom:84px; z-index:3;
+  border:3px double var(--stamp); color:var(--stamp); border-radius:6px;
+  padding:6px 14px; font-family:"Big Shoulders Stencil Display","Big Shoulders Display",sans-serif;
+  font-weight:800; font-size:22px; letter-spacing:.08em; text-transform:uppercase;
+  transform:rotate(-13deg); opacity:.86; mix-blend-mode:multiply;
+  text-align:center; line-height:1; box-shadow:inset 0 0 0 1px rgba(187,58,42,.3);
+}
+.stampmark small{ display:block; font-size:7.5px; letter-spacing:.24em; margin-top:3px; font-family:"DM Mono",monospace; font-weight:400; }
+.stampmark.cost{ color:#2f7d5e; border-color:#2f7d5e; box-shadow:inset 0 0 0 1px rgba(47,125,94,.3); }
+.stampmark.pulse{ animation:thunk .4s var(--ease); }
+@keyframes thunk{ 0%{ transform:rotate(-13deg) scale(2.2); opacity:0; } 60%{ transform:rotate(-13deg) scale(.92); opacity:.95; } 100%{ transform:rotate(-13deg) scale(1); opacity:.86; } }
+
+/* =========================== Dispatch ========================= */
+.overlay{ position:fixed; inset:0; z-index:80; background:rgba(4,6,11,.86); backdrop-filter:blur(6px);
+  display:none; place-items:center; padding:30px; }
+.overlay.on{ display:grid; animation:fade .3s; }
+@keyframes fade{ from{opacity:0} to{opacity:1} }
+.telex{
+  width:min(680px,100%); max-height:88vh; overflow:auto; background:var(--ink-1);
+  border:1px solid var(--hair-2); border-radius:6px; box-shadow:var(--shadow-lift); position:relative;
+}
+.telex-top{ display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid var(--hair-2); }
+.telex-top .ttl{ font-family:"Big Shoulders Display",sans-serif; font-weight:800; font-size:20px; letter-spacing:.06em; color:var(--amber); }
+.telex-top .x{ background:transparent; border:1px solid var(--hair-2); color:var(--text-dim); width:30px; height:30px; border-radius:4px; cursor:pointer; font-size:15px; }
+.telex-top .x:hover{ color:var(--text); border-color:var(--hair-2); }
+.pipe{ display:flex; gap:8px; padding:16px 20px 4px; flex-wrap:wrap; }
+.node{ flex:1 1 0; min-width:96px; border:1px solid var(--hair); border-radius:4px; padding:10px; text-align:center; opacity:.3; transition:.4s; }
+.node.lit{ opacity:1; border-color:var(--amber-deep); background:rgba(255,176,0,.06); }
+.node .nn{ font-size:8px; letter-spacing:.2em; color:var(--text-dim); text-transform:uppercase; }
+.node .ns{ font-family:"Big Shoulders Display",sans-serif; font-weight:700; font-size:14px; color:var(--text); margin-top:3px; }
+.node.lit .ns{ color:var(--amber); }
+.json{ margin:14px 20px 8px; padding:16px; background:#06080e; border:1px solid var(--hair); border-radius:5px;
+  font-size:12px; line-height:1.65; color:#c9d2e3; white-space:pre; overflow:auto; max-height:38vh; }
+.json .k{ color:var(--amber-soft); } .json .s{ color:var(--radar); } .json .n{ color:#ff9d6e; } .json .p{ color:var(--text-dim); }
+.telex-act{ display:flex; gap:10px; padding:8px 20px 20px; }
+.telex-act button{ flex:1; font-family:"Big Shoulders Display",sans-serif; font-weight:700; letter-spacing:.12em; text-transform:uppercase;
+  padding:12px; border-radius:4px; cursor:pointer; font-size:14px; transition:.2s; }
+.copybtn{ background:var(--amber); color:var(--ink); border:1px solid var(--amber-deep); }
+.copybtn:hover{ filter:brightness(1.06); }
+.againbtn{ background:transparent; color:var(--text-dim); border:1px solid var(--hair-2); }
+.againbtn:hover{ color:var(--text); }
+
+footer{ text-align:center; margin-top:54px; font-size:9.5px; letter-spacing:.3em; color:var(--text-faint); text-transform:uppercase; opacity:0; animation:rise .7s var(--ease) .4s forwards; }
+footer b{ color:var(--text-dim); font-weight:400; }
+
+@keyframes rise{ from{ opacity:0; transform:translateY(16px); } to{ opacity:1; transform:none; } }
+
+/* -------------------------- Responsive ----------------------- */
+@media (max-width:960px){
+  .deck{ grid-template-columns:1fr; }
+  .awb-wrap{ position:static; order:-1; }
+  .step-head h2{ font-size:30px; }
+}
+@media (max-width:560px){
+  .shell{ padding:20px 16px 60px; }
+  .row.r3,.row.r2{ grid-template-columns:1fr; }
+  .item{ grid-template-columns:1fr 1fr; }
+  .item .kill{ grid-column:2; justify-self:end; }
+  .wp .label{ display:none; }
+  header{ flex-direction:column; align-items:flex-start; gap:12px; }
+  .status{ text-align:left; } .status .row{ justify-content:flex-start; }
+}
+@media (prefers-reduced-motion:reduce){
+  *{ animation-duration:.001ms !important; animation-iteration-count:1 !important; transition-duration:.05ms !important; }
+  .atmos .sweep, .gc .line::after{ display:none; }
+}
+</style>
+</head>
+<body>
+
+<div class="atmos">
+  <div class="grid"></div><div class="glow-a"></div><div class="glow-b"></div><div class="sweep"></div>
+</div>
+<div class="scan"></div><div class="grain"></div>
+
+<div class="shell">
+
+  <!-- ===== Header ===== -->
+  <header>
+    <div class="brand">
+      <div class="roundel"></div>
+      <div class="wordmark">
+        <div class="name">AERO<b>FREIGHT</b> AI</div>
+        <div class="sub">Autonomous Cargo Manifest Intake</div>
+      </div>
+    </div>
+    <div class="status">
+      <div class="row"><span class="dot"></span><span>ORCHESTRATOR SWARM — ONLINE</span></div>
+      <div class="clk" id="clk">--:--:-- Z</div>
+      <div>5 AGENTS STANDING BY · HUB-AND-SPOKE</div>
+    </div>
+  </header>
+
+  <!-- ===== Stepper ===== -->
+  <div class="flightpath">
+    <div class="track"></div><div class="lit" id="lit"></div>
+    <div class="waypoints" id="waypoints">
+      <button class="wp" data-step="0"><span class="plane">✈</span><span class="node"><span>1</span></span><span class="label">Route</span></button>
+      <button class="wp" data-step="1"><span class="plane">✈</span><span class="node"><span>2</span></span><span class="label">Cargo</span></button>
+      <button class="wp" data-step="2"><span class="plane">✈</span><span class="node"><span>3</span></span><span class="label">Specs</span></button>
+      <button class="wp" data-step="3"><span class="plane">✈</span><span class="node"><span>4</span></span><span class="label">Dispatch</span></button>
+    </div>
+  </div>
+
+  <!-- ===== Deck ===== -->
+  <div class="deck">
+
+    <!-- ---- Input panel ---- -->
+    <div class="panel">
+      <span class="corner tr"></span><span class="corner bl"></span>
+      <form id="form" class="steps" autocomplete="off">
+
+        <!-- STEP 1 — ROUTE -->
+        <section class="stage on" data-stage="0">
+          <div class="step-head"><span class="idx">01 /</span><h2>Route</h2></div>
+          <p class="step-sub">Where the cargo lifts from, and where it must land. The routing agent will resolve the optimal lane.</p>
+
+          <div class="grp-label">Origin <span class="n">DEP</span></div>
+          <div class="row r3">
+            <div class="field"><label>Country</label><input id="o_country" list="countries" placeholder="CN" maxlength="3" /></div>
+            <div class="field"><label>State / Prov</label><input id="o_state" placeholder="Guangdong" /></div>
+            <div class="field"><label>City</label><input id="o_city" placeholder="Shenzhen" /></div>
+          </div>
+
+          <div class="gc"><span>DEP</span><span class="line"></span><span>ARR</span></div>
+
+          <div class="grp-label">Destination <span class="n">ARR</span></div>
+          <div class="row r3">
+            <div class="field"><label>Country</label><input id="d_country" list="countries" placeholder="US" maxlength="3" /></div>
+            <div class="field"><label>State / Prov</label><input id="d_state" placeholder="TX" /></div>
+            <div class="field"><label>City</label><input id="d_city" placeholder="Austin" /></div>
+          </div>
+        </section>
+
+        <!-- STEP 2 — CARGO -->
+        <section class="stage" data-stage="1">
+          <div class="step-head"><span class="idx">02 /</span><h2>Cargo</h2></div>
+          <p class="step-sub">Itemize the consignment. Categories feed the duty classifier and the compliance form selector.</p>
+          <div class="items" id="items"></div>
+          <button type="button" class="additem" id="additem">+ Add line item</button>
+          <div class="tally">
+            <div>LINES <b id="t_lines">0</b></div>
+            <div>PIECES <b id="t_pieces">0</b></div>
+          </div>
+        </section>
+
+        <!-- STEP 3 — SPECS -->
+        <section class="stage" data-stage="2">
+          <div class="step-head"><span class="idx">03 /</span><h2>Specs</h2></div>
+          <p class="step-sub">Physical envelope and declared value. These set the transport-mode constraints and entry tax.</p>
+
+          <div class="grp-label">Gross Weight</div>
+          <div class="gauge"><div class="big"><span id="g_weight">0</span> <small>KG</small></div>
+            <input type="range" id="r_weight" min="0" max="8000" step="10" value="0" /></div>
+          <div class="field" style="margin-top:8px"><label>Exact kilograms</label><input id="weight" type="number" min="0" step="0.1" placeholder="200" /><span class="unit">KG</span></div>
+
+          <div class="grp-label">Volume</div>
+          <div class="field"><label>Total volume</label><input id="volume" type="number" min="0" step="0.1" placeholder="3.0" /><span class="unit">CBM</span></div>
+
+          <div class="grp-label">Declared Value</div>
+          <div class="field pre"><label>Customs declared value</label><span class="pre">$</span><input id="value" type="number" min="0" step="1" placeholder="2800" /><span class="unit">USD</span></div>
+
+          <div class="density"><span>EST. DENSITY</span><b id="density">— KG / CBM</b></div>
+        </section>
+
+        <!-- STEP 4 — DISPATCH -->
+        <section class="stage" data-stage="3">
+          <div class="step-head"><span class="idx">04 /</span><h2>Dispatch</h2></div>
+          <p class="step-sub">Set the optimization priority, confirm the manifest, and transmit to the orchestrator swarm.</p>
+
+          <div class="grp-label">Optimization Priority</div>
+          <div class="throttle" id="throttle" data-mode="SPEED">
+            <div class="knob"></div>
+            <button type="button" class="opt speed" data-mode="SPEED">
+              <div class="k">SPEED</div>
+              <div class="d">Minimize transit time. Forces AIR where permitted.</div>
+              <div class="m">› Time-critical</div>
+            </button>
+            <button type="button" class="opt cost" data-mode="COST">
+              <div class="k">COST</div>
+              <div class="d">Minimize landed cost. Allows SHIP for heavy freight.</div>
+              <div class="m">› Budget-critical</div>
+            </button>
+          </div>
+
+          <div class="review">
+            <h3>Manifest Review</h3>
+            <div class="rgrid" id="review"></div>
+          </div>
+        </section>
+
+      </form>
+
+      <!-- nav -->
+      <div class="nav">
+        <button class="btn ghost" id="back" disabled>← Back</button>
+        <button class="btn go" id="next">Continue <span class="ar">→</span></button>
+        <button class="btn dispatch" id="dispatch" style="display:none">⦿ Dispatch to Swarm</button>
+      </div>
+    </div>
+
+    <!-- ---- Air Waybill live preview ---- -->
+    <div class="awb-wrap">
+      <div class="awb">
+        <div class="perf top"></div>
+        <div class="awb-body">
+          <div class="awb-head">
+            <div class="t"><div class="o">AIR <b>WAYBILL</b></div><div class="s">NON-NEGOTIABLE · ORCHESTRATOR COPY</div></div>
+            <div class="awb-no"><div class="lab">AWB NO.</div><div class="num" id="awbno">000-00000000</div></div>
+          </div>
+
+          <div class="board">
+            <div class="lane">
+              <div class="flaps" id="flapsO"></div>
+              <span class="arrow">→</span>
+              <div class="flaps" id="flapsD"></div>
+            </div>
+            <div class="cities"><span id="cityO">ORIGIN</span><span id="cityD">DESTINATION</span></div>
+          </div>
+
+          <div class="awb-grid">
+            <div class="cell"><div class="l">Pieces (RCP)</div><div class="v" id="awb_pieces">—</div></div>
+            <div class="cell"><div class="l">Gross Weight</div><div class="v" id="awb_weight">— <small>kg</small></div></div>
+            <div class="cell"><div class="l">Volume</div><div class="v" id="awb_volume">— <small>cbm</small></div></div>
+            <div class="cell"><div class="l">Declared Value</div><div class="v" id="awb_value">— <small>usd</small></div></div>
+            <div class="cell full"><div class="l">Nature & Quantity of Goods</div><div class="mani" id="awb_goods"><em>awaiting manifest…</em></div></div>
+          </div>
+
+          <div class="barcode"></div>
+          <div class="bc-no" id="bcno">▮ 0000 0000 0000 ▮</div>
+
+          <div class="stampmark" id="stamp">SPEED<small>PRIORITY · AIR</small></div>
+        </div>
+        <div class="perf"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>AeroFreight AI · <b>ShipmentRequest</b> → Orchestrator · Economic · Routing · Compliance · Treasury</footer>
+</div>
+
+<!-- country code suggestions -->
+<datalist id="countries">
+  <option value="CN">China</option><option value="US">United States</option><option value="IN">India</option>
+  <option value="DE">Germany</option><option value="MX">Mexico</option><option value="IT">Italy</option>
+  <option value="JP">Japan</option><option value="GB">United Kingdom</option><option value="KR">South Korea</option>
+  <option value="VN">Vietnam</option><option value="NL">Netherlands</option><option value="FR">France</option>
+  <option value="BR">Brazil</option><option value="CA">Canada</option><option value="AE">UAE</option>
+</datalist>
+
+<!-- ===== Dispatch overlay ===== -->
+<div class="overlay" id="overlay">
+  <div class="telex">
+    <div class="telex-top">
+      <span class="ttl">▶ TRANSMITTING MANIFEST</span>
+      <button class="x" id="close">✕</button>
+    </div>
+    <div class="pipe" id="pipe">
+      <div class="node"><div class="nn">Step 1</div><div class="ns">Orchestrator</div></div>
+      <div class="node"><div class="nn">Step 2</div><div class="ns">Economic</div></div>
+      <div class="node"><div class="nn">Step 3</div><div class="ns">Routing</div></div>
+      <div class="node"><div class="nn">Step 4</div><div class="ns">Compliance</div></div>
+      <div class="node"><div class="nn">Step 5</div><div class="ns">Treasury</div></div>
+    </div>
+    <pre class="json" id="json"></pre>
+    <div class="telex-act">
+      <button class="copybtn" id="copy">⧉ Copy ShipmentRequest JSON</button>
+      <button class="againbtn" id="again">↺ New Manifest</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============================================================ *
+ *  State + helpers
+ * ============================================================ */
+const $  = (s,el=document)=>el.querySelector(s);
+const $$ = (s,el=document)=>[...el.querySelectorAll(s)];
+
+const CATEGORIES = ["electronics","semiconductor","apparel","jewelry","battery",
+  "pharmaceutical","machinery","footwear","steel","furniture","toys","food","alcohol","general"];
+
+let step = 0;
+let items = [];               // {name, quantity, category}
+let mode = "SPEED";
+const TOTAL = 4;
+
+/* live UTC clock */
+function tick(){
+  const d = new Date();
+  const p = n => String(n).padStart(2,"0");
+  $("#clk").textContent = `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} Z`;
+}
+setInterval(tick,1000); tick();
+
+/* a stable AWB number for the session */
+const AWB_PREFIX = String(Math.floor(Math.random()*899+100));
+const AWB_SERIAL = String(Math.floor(Math.random()*9e7+1e7));
+$("#awbno").textContent = `${AWB_PREFIX}-${AWB_SERIAL}`;
+$("#bcno").textContent  = `▮ ${AWB_PREFIX} ${AWB_SERIAL.slice(0,4)} ${AWB_SERIAL.slice(4)} ▮`;
+
+/* ============================================================ *
+ *  Split-flap departure board
+ * ============================================================ */
+const GLYPHS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ";
+function buildFlaps(box,len){
+  box.innerHTML="";
+  for(let i=0;i<len;i++){ const f=document.createElement("div"); f.className="flap"; f.textContent=" "; box.appendChild(f); }
+}
+buildFlaps($("#flapsO"),3); buildFlaps($("#flapsD"),3);
+
+function setFlaps(box,text){
+  const cells=$$(".flap",box);
+  text=(text||"").toUpperCase().replace(/[^A-Z0-9 ]/g,"").padEnd(cells.length," ").slice(0,cells.length);
+  cells.forEach((cell,i)=>{
+    clearInterval(cell._t);
+    const target=text[i];
+    let ticks=5+i*2+Math.floor(Math.random()*4);
+    cell._t=setInterval(()=>{
+      if(ticks<=0){ cell.textContent=target; clearInterval(cell._t); return; }
+      cell.textContent=GLYPHS[Math.floor(Math.random()*GLYPHS.length)];
+      cell.classList.remove("spin"); void cell.offsetWidth; cell.classList.add("spin");
+      ticks--;
+    },55);
+  });
+}
+/* derive a 3-letter pseudo-code from city (or country) */
+function code(city,country){
+  const c=(city||"").trim();
+  if(c.length>=3) return c.slice(0,3);
+  if(c.length>0)  return c.padEnd(3,"·");
+  return (country||"").trim().slice(0,3).padEnd(3," ");
+}
+
+/* ============================================================ *
+ *  Cargo line items
+ * ============================================================ */
+function itemRow(it,idx){
+  const opts=CATEGORIES.map(c=>`<option value="${c}" ${c===it.category?"selected":""}>${c}</option>`).join("");
+  const el=document.createElement("div");
+  el.className="item"; el.dataset.idx=idx;
+  el.innerHTML=`
+    <span class="tag">ITEM ${String(idx+1).padStart(2,"0")}</span>
+    <div class="field"><label>Description</label><input class="i-name" value="${it.name||""}" placeholder="semiconductor components" /></div>
+    <div class="field"><label>Qty</label><input class="i-qty" type="number" min="1" step="1" value="${it.quantity||""}" placeholder="500" /></div>
+    <div class="field"><label>Category</label><select class="i-cat">${opts}</select></div>
+    <button type="button" class="kill" title="Remove">✕</button>`;
+  $(".i-name",el).addEventListener("input",e=>{ items[idx].name=e.target.value; sync(); });
+  $(".i-qty",el).addEventListener("input",e=>{ items[idx].quantity=e.target.value; sync(); });
+  $(".i-cat",el).addEventListener("change",e=>{ items[idx].category=e.target.value; sync(); });
+  $(".kill",el).addEventListener("click",()=>{
+    if(items.length<=1){ items[0]={name:"",quantity:"",category:"general"}; renderItems(); sync(); return; }
+    el.classList.add("out");
+    setTimeout(()=>{ items.splice(idx,1); renderItems(); sync(); },280);
+  });
+  return el;
+}
+function renderItems(){
+  const box=$("#items"); box.innerHTML="";
+  items.forEach((it,i)=>box.appendChild(itemRow(it,i)));
+}
+$("#additem").addEventListener("click",()=>{
+  items.push({name:"",quantity:"",category:"general"}); renderItems(); sync();
+  const last=$("#items").lastElementChild; $(".i-name",last)?.focus();
+});
+
+/* ============================================================ *
+ *  Specs — slider <-> number binding
+ * ============================================================ */
+const weight=$("#weight"), rweight=$("#r_weight");
+weight.addEventListener("input",()=>{ rweight.value=Math.min(8000,weight.value||0); sync(); });
+rweight.addEventListener("input",()=>{ weight.value=rweight.value; sync(); });
+$("#volume").addEventListener("input",sync);
+$("#value").addEventListener("input",sync);
+
+/* ============================================================ *
+ *  Priority throttle
+ * ============================================================ */
+$$(".throttle .opt").forEach(b=>b.addEventListener("click",()=>{
+  mode=b.dataset.mode; $("#throttle").dataset.mode=mode; sync(true);
+}));
+
+/* ============================================================ *
+ *  Route inputs
+ * ============================================================ */
+["o_country","o_state","o_city","d_country","d_state","d_city"].forEach(id=>$("#"+id).addEventListener("input",sync));
+
+/* ============================================================ *
+ *  Sync everything -> live waybill
+ * ============================================================ */
+let lastO="", lastD="";
+function val(id){ return $("#"+id).value.trim(); }
+function num(id){ const n=parseFloat($("#"+id).value); return isNaN(n)?0:n; }
+
+function sync(stamped){
+  // route board
+  const oc=code(val("o_city"),val("o_country")), dc=code(val("d_city"),val("d_country"));
+  if(oc!==lastO){ setFlaps($("#flapsO"),oc); lastO=oc; }
+  if(dc!==lastD){ setFlaps($("#flapsD"),dc); lastD=dc; }
+  $("#cityO").textContent=(val("o_city")||val("o_country")||"ORIGIN").toUpperCase();
+  $("#cityD").textContent=(val("d_city")||val("d_country")||"DESTINATION").toUpperCase();
+
+  // cargo
+  const pieces=items.reduce((s,i)=>s+(parseInt(i.quantity)||0),0);
+  const lines=items.filter(i=>i.name.trim()).length;
+  $("#t_lines").textContent=lines; $("#t_pieces").textContent=pieces;
+  $("#awb_pieces").textContent=pieces||"—";
+  const named=items.filter(i=>i.name.trim());
+  $("#awb_goods").innerHTML = named.length
+    ? named.map(i=>`${i.quantity||"?"} × ${i.name} <em>[${i.category}]</em>`).join("<br>")
+    : `<em>awaiting manifest…</em>`;
+
+  // specs
+  const w=num("weight"), v=num("volume"), val$=num("value");
+  $("#g_weight").textContent=w?Math.round(w).toLocaleString():"0";
+  $("#awb_weight").innerHTML=(w?w.toLocaleString():"—")+` <small>kg</small>`;
+  $("#awb_volume").innerHTML=(v?v:"—")+` <small>cbm</small>`;
+  $("#awb_value").innerHTML=(val$?"$"+val$.toLocaleString():"—")+` <small>usd</small>`;
+  $("#density").textContent = (w&&v) ? `${(w/v).toFixed(1)} KG / CBM` : "— KG / CBM";
+
+  // priority stamp
+  const st=$("#stamp");
+  if(mode==="SPEED"){ st.classList.remove("cost"); st.innerHTML=`SPEED<small>PRIORITY · AIR</small>`; }
+  else{ st.classList.add("cost"); st.innerHTML=`ECONOMY<small>LOWEST LANDED COST</small>`; }
+  if(stamped){ st.classList.remove("pulse"); void st.offsetWidth; st.classList.add("pulse"); }
+
+  if(step===3) renderReview();
+}
+
+/* manifest review (step 4) */
+function renderReview(){
+  const r=$("#review");
+  const named=items.filter(i=>i.name.trim());
+  const rows=[
+    ["Origin", [val("o_city"),val("o_state"),val("o_country")].filter(Boolean).join(", ")||"—"],
+    ["Destination", [val("d_city"),val("d_state"),val("d_country")].filter(Boolean).join(", ")||"—"],
+    ["Line items", named.length||"0"],
+    ["Total pieces", items.reduce((s,i)=>s+(parseInt(i.quantity)||0),0)||"0"],
+    ["Gross weight", num("weight")?num("weight").toLocaleString()+" kg":"—"],
+    ["Volume", num("volume")?num("volume")+" cbm":"—"],
+    ["Declared value", num("value")?"$"+num("value").toLocaleString():"—"],
+    ["Priority", mode],
+  ];
+  r.innerHTML=rows.map(([k,v])=>`<div class="li"><span>${k}</span><b>${v}</b></div>`).join("");
+}
+
+/* ============================================================ *
+ *  Step navigation + validation
+ * ============================================================ */
+function showStep(n){
+  step=Math.max(0,Math.min(TOTAL-1,n));
+  $$(".stage").forEach(s=>s.classList.toggle("on", +s.dataset.stage===step));
+  $$(".wp").forEach((w,i)=>w.dataset.state = i<step?"done":(i===step?"active":""));
+  $("#lit").style.width = (step/(TOTAL-1))*90 + "%";
+  $("#back").disabled = step===0;
+  $("#next").style.display = step<TOTAL-1 ? "" : "none";
+  $("#dispatch").style.display = step===TOTAL-1 ? "" : "none";
+  if(step===3) renderReview();
+  window.scrollTo({top:0,behavior:"smooth"});
+}
+
+function markBad(ids){
+  ids.forEach(id=>{ const f=$("#"+id)?.closest(".field"); if(f){ f.classList.add("bad"); setTimeout(()=>f.classList.remove("bad"),1600);} });
+}
+function validate(n){
+  if(n===0){
+    const need=["o_country","o_city","d_country","d_city"].filter(id=>!val(id));
+    if(need.length){ markBad(need); return false; }
+  }
+  if(n===1){
+    const ok=items.some(i=>i.name.trim() && (parseInt(i.quantity)||0)>0);
+    if(!ok){ $("#items").animate([{transform:"translateX(-6px)"},{transform:"translateX(6px)"},{transform:"none"}],{duration:300}); return false; }
+  }
+  if(n===2){
+    const need=["weight","volume","value"].filter(id=>num(id)<=0);
+    if(need.length){ markBad(need); return false; }
+  }
+  return true;
+}
+
+$("#next").addEventListener("click",()=>{ if(validate(step)) showStep(step+1); });
+$("#back").addEventListener("click",()=>showStep(step-1));
+$$(".wp").forEach(w=>w.addEventListener("click",()=>{
+  const t=+w.dataset.step;
+  if(t<=step){ showStep(t); return; }
+  // only allow forward jump if every step in between validates
+  let ok=true; for(let i=step;i<t;i++){ if(!validate(i)){ showStep(i); ok=false; break; } }
+  if(ok) showStep(t);
+}));
+
+/* ============================================================ *
+ *  Build ShipmentRequest + dispatch
+ * ============================================================ */
+function buildPayload(){
+  return {
+    origin:      { country:val("o_country"), state:val("o_state"), city:val("o_city") },
+    destination: { country:val("d_country"), state:val("d_state"), city:val("d_city") },
+    items: items.filter(i=>i.name.trim()).map(i=>({
+      name:i.name.trim(), quantity:parseInt(i.quantity)||0, category:i.category||"general"
+    })),
+    total_weight_kg:  num("weight"),
+    total_volume_cbm: num("volume"),
+    timeframe: mode,
+    declared_value_usd: num("value"),
+  };
+}
+function colorJSON(obj){
+  const j=JSON.stringify(obj,null,2);
+  return j
+    .replace(/("(\\.|[^"\\])*")(\s*:)/g,'<span class="k">$1</span>$3')        // keys
+    .replace(/:\s*("(\\.|[^"\\])*")/g,': <span class="s">$1</span>')          // string vals
+    .replace(/:\s*(-?\d+\.?\d*)/g,': <span class="n">$1</span>')              // numbers
+    .replace(/([{}\[\],])/g,'<span class="p">$1</span>');                     // punctuation
+}
+$("#dispatch").addEventListener("click",()=>{
+  if(!validate(0)||!validate(1)||!validate(2)){ return; }
+  const payload=buildPayload();
+  $("#json").innerHTML=colorJSON(payload);
+  $("#overlay").classList.add("on");
+  // stamp the waybill
+  const st=$("#stamp"); st.classList.remove("pulse"); void st.offsetWidth; st.classList.add("pulse");
+  // animate the agent pipeline lighting up in sequence
+  const nodes=$$("#pipe .node"); nodes.forEach(n=>n.classList.remove("lit"));
+  nodes.forEach((n,i)=>setTimeout(()=>n.classList.add("lit"), 260*(i+1)));
+  console.log("ShipmentRequest →", payload);
+});
+$("#close").addEventListener("click",()=>$("#overlay").classList.remove("on"));
+$("#overlay").addEventListener("click",e=>{ if(e.target.id==="overlay") $("#overlay").classList.remove("on"); });
+$("#copy").addEventListener("click",async()=>{
+  try{ await navigator.clipboard.writeText(JSON.stringify(buildPayload(),null,2));
+    const b=$("#copy"); const t=b.textContent; b.textContent="✓ Copied to clipboard"; setTimeout(()=>b.textContent=t,1500);
+  }catch(e){ /* clipboard blocked — payload still in console */ }
+});
+$("#again").addEventListener("click",()=>{ $("#overlay").classList.remove("on"); });
+
+/* ============================================================ *
+ *  Boot
+ * ============================================================ */
+items=[{name:"",quantity:"",category:"general"}];
+renderItems();
+showStep(0);
+sync();
+</script>
+</body>
+</html>
