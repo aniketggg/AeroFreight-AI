@@ -1,0 +1,174 @@
+"""Claude-powered shipment field extraction."""
+
+from __future__ import annotations
+
+import json
+import os
+from typing import Literal, Protocol
+
+import anthropic
+from anthropic import Anthropic, AuthenticationError, RateLimitError
+from dotenv import load_dotenv
+from pydantic import BaseModel, ConfigDict, ValidationError
+
+from orchestrator.models import PartialItem, PartialShipmentData
+
+load_dotenv()
+
+DEFAULT_MODEL = "claude-sonnet-4-6"
+
+SYSTEM_INSTRUCTIONS = """You extract shipment information for a freight forwarding orchestrator.
+
+Rules:
+- Extract shipment fields from the latest user message.
+- Use current data only as context.
+- Preserve existing information unless the user clearly corrects it.
+- Return null for unknown fields.
+- Never invent weight, volume, declared value, quantity, location, or timeframe.
+- Never estimate freight costs, taxes, tariffs, routes, documents, or payment details.
+- Convert wording such as "fast," "urgent," "quickest," and "as soon as possible" to SPEED.
+- Convert wording such as "cheap," "cheapest," "budget," and "lowest cost" to COST.
+- Normalize obvious country codes to uppercase.
+- You may fill well-known unambiguous geography, such as Austin being in Texas, but must not guess ambiguous cities.
+- You may infer a broad item category only when clearly implied by the item.
+- Do not default an unknown quantity to 1.
+- Do not interpret CONFIRM or NEW SHIPMENT as shipment information.
+- Return all known current values, including unchanged values, so the result represents the updated partial shipment.
+
+Return structured shipment data matching the requested output format."""
+
+
+class ExtractionError(Exception):
+    """Safe error raised when shipment extraction fails."""
+
+
+class ExtractorConfigurationError(ExtractionError):
+    """Raised when the extractor is not configured."""
+
+
+class ExtractionLocation(BaseModel):
+    country: str | None = None
+    state: str | None = None
+    city: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ExtractionPayload(BaseModel):
+    origin: ExtractionLocation | None = None
+    destination: ExtractionLocation | None = None
+    items: list[PartialItem] | None = None
+    total_weight_kg: float | None = None
+    total_volume_cbm: float | None = None
+    timeframe: Literal["SPEED", "COST"] | None = None
+    declared_value_usd: float | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ShipmentExtractor(Protocol):
+    def extract(
+        self,
+        user_message: str,
+        current_data: PartialShipmentData,
+    ) -> PartialShipmentData:
+        ...
+
+
+def _location_to_dict(location: ExtractionLocation | None) -> dict | None:
+    if location is None:
+        return None
+    data = location.model_dump(exclude_none=True)
+    return data or None
+
+
+def _payload_to_partial(payload: ExtractionPayload) -> PartialShipmentData:
+    data = {
+        "origin": _location_to_dict(payload.origin),
+        "destination": _location_to_dict(payload.destination),
+        "items": payload.items,
+        "total_weight_kg": payload.total_weight_kg,
+        "total_volume_cbm": payload.total_volume_cbm,
+        "timeframe": payload.timeframe,
+        "declared_value_usd": payload.declared_value_usd,
+    }
+    return PartialShipmentData.model_validate(data)
+
+
+class ClaudeShipmentExtractor:
+    """Extract partial shipment data using Anthropic Claude structured output."""
+
+    def __init__(
+        self,
+        client: Anthropic | None = None,
+        model: str | None = None,
+        api_key: str | None = None,
+    ) -> None:
+        self._model = model or os.getenv("ANTHROPIC_MODEL") or DEFAULT_MODEL
+
+        if client is not None:
+            self._client = client
+            return
+
+        resolved_key = api_key or os.getenv("ANTHROPIC_API_KEY")
+        if not resolved_key:
+            raise ExtractorConfigurationError(
+                "ANTHROPIC_API_KEY is not configured. "
+                "Set it in your environment or .env file."
+            )
+        self._client = Anthropic(api_key=resolved_key)
+
+    def extract(
+        self,
+        user_message: str,
+        current_data: PartialShipmentData,
+    ) -> PartialShipmentData:
+        """Extract shipment fields from the latest user message."""
+        if not user_message.strip():
+            raise ExtractionError("Please provide a message describing your shipment.")
+
+        user_content = (
+            "Current partial shipment data:\n"
+            f"{json.dumps(current_data.model_dump(mode='json'), indent=2)}\n\n"
+            "Latest user message:\n"
+            f"{user_message}"
+        )
+
+        try:
+            response = self._client.messages.parse(
+                model=self._model,
+                max_tokens=1024,
+                system=SYSTEM_INSTRUCTIONS,
+                messages=[{"role": "user", "content": user_content}],
+                output_format=ExtractionPayload,
+            )
+        except AuthenticationError as exc:
+            raise ExtractionError(
+                "The extraction service could not authenticate. "
+                "Please check your API key configuration."
+            ) from exc
+        except RateLimitError as exc:
+            raise ExtractionError(
+                "The extraction service is temporarily busy. Please try again shortly."
+            ) from exc
+        except anthropic.APIConnectionError as exc:
+            raise ExtractionError(
+                "Could not reach the extraction service. Please try again later."
+            ) from exc
+        except anthropic.APIError as exc:
+            raise ExtractionError(
+                "The extraction service returned an unexpected error."
+            ) from exc
+
+        parsed_output = response.parsed_output
+        if parsed_output is None:
+            raise ExtractionError(
+                "The extraction service did not return structured shipment data."
+            )
+
+        try:
+            return _payload_to_partial(parsed_output)
+        except ValidationError as exc:
+            raise ExtractionError(
+                "The extraction service returned invalid shipment data."
+            ) from exc
