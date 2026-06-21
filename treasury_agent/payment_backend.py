@@ -11,15 +11,26 @@ except ImportError:  # pragma: no cover
     stripe = None
 
 
+_DEFAULT_RETURN_URL = "https://agentverse.ai"
+
+
+def _resolve_return_url() -> str:
+    """Prefer STRIPE_RETURN_URL, then legacy STRIPE_SUCCESS_URL, then default."""
+    preferred = (os.getenv("STRIPE_RETURN_URL") or "").strip()
+    if preferred:
+        return preferred.rstrip("/")
+    legacy = (os.getenv("STRIPE_SUCCESS_URL") or "").strip()
+    if legacy:
+        return legacy.rstrip("/")
+    return _DEFAULT_RETURN_URL
+
+
 def _cfg() -> dict:
     return {
         "secret_key": (os.getenv("STRIPE_SECRET_KEY", "") or "").strip(),
         "publishable_key": (os.getenv("STRIPE_PUBLISHABLE_KEY", "") or "").strip(),
         "currency": (os.getenv("STRIPE_CURRENCY", "usd") or "usd").lower().strip(),
-        "success_url": (
-            os.getenv("STRIPE_SUCCESS_URL", "https://agentverse.ai")
-            or "https://agentverse.ai"
-        ).rstrip("/"),
+        "return_url": _resolve_return_url(),
         "expires_seconds": int(
             os.getenv("STRIPE_CHECKOUT_EXPIRES_SECONDS", "1800") or 1800
         ),
@@ -60,11 +71,11 @@ def create_settlement_checkout(
     amount_cents = int(round(amount_usd * 100))
     try:
         return_url = (
-            f"{config['success_url']}?session_id={{CHECKOUT_SESSION_ID}}"
+            f"{config['return_url']}?session_id={{CHECKOUT_SESSION_ID}}"
             f"&aerofreight_session={session_id}&user={user_address}"
         )
         session = client.checkout.Session.create(
-            ui_mode="embedded",
+            ui_mode="embedded_page",
             redirect_on_completion="if_required",
             payment_method_types=["card"],
             mode="payment",
@@ -98,7 +109,7 @@ def create_settlement_checkout(
             "publishable_key": config["publishable_key"],
             "currency": config["currency"],
             "amount_cents": amount_cents,
-            "ui_mode": "embedded",
+            "ui_mode": "embedded_page",
         }
     except Exception:
         return None
