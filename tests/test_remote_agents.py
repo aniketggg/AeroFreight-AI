@@ -12,11 +12,19 @@ from orchestrator.mock_agents import MockEconomistAgent, MockRoutingAgent
 from orchestrator.remote_agents import (
     RemoteEconomistError,
     RemoteRoutingError,
+    RemoteTreasuryError,
     UAgentsEconomistClient,
     UAgentsRoutingClient,
+    UAgentsTreasuryPaymentClient,
 )
-from shared_models import EconData, Item, RouteData, ShipmentRequest
+from shared_models import DocTemplates, EconData, Item, RouteData, SettlementStatus, ShipmentRequest
 from step3_riya.agent import RouteRequestMessage, RouteResponseMessage
+from treasury_agent.messages import (
+    PaymentFinalizeRequestMessage,
+    PaymentFinalizeResponseMessage,
+    PaymentSetupRequestMessage,
+    PaymentSetupResponseMessage,
+)
 
 
 def _run(coro):
@@ -375,3 +383,197 @@ def test_routing_send_failure_wraps_with_exception_chaining():
 
     assert isinstance(exc_info.value.__cause__, RuntimeError)
     assert "network down" not in str(exc_info.value)
+
+
+def _sample_docs() -> DocTemplates:
+    return DocTemplates(
+        required_form_names=["Commercial Invoice"],
+        blank_form_structures={"Commercial Invoice": {"fields": []}},
+    )
+
+
+class FakeSendContext:
+    def __init__(
+        self,
+        *,
+        reply=None,
+        raise_on_send: Exception | None = None,
+    ) -> None:
+        self.reply = reply
+        self.raise_on_send = raise_on_send
+        self.last_call: dict | None = None
+        self.logger = SimpleNamespace(error=lambda *args, **kwargs: None)
+
+    async def send(self, destination, message):
+        self.last_call = {"destination": destination, "message": message}
+        if self.raise_on_send is not None:
+            raise self.raise_on_send
+        return SimpleNamespace(status="delivered")
+
+    async def send_and_receive(
+        self,
+        destination,
+        message,
+        response_type,
+        sync=False,
+        timeout=30,
+    ):
+        self.last_call = {
+            "destination": destination,
+            "message": message,
+            "response_type": response_type,
+            "timeout": timeout,
+        }
+        if self.raise_on_send is not None:
+            raise self.raise_on_send
+        return self.reply, SimpleNamespace(detail=None)
+
+
+def test_treasury_prepare_payment_sends_setup_request():
+    shipment = _sample_shipment()
+    econ = _sample_econ()
+    route = _sample_route_data()
+    docs = _sample_docs()
+    ctx = FakeSendContext(
+        reply=PaymentSetupResponseMessage(
+            ok=True,
+            session_id="session-abc",
+            checkout={"checkout_session_id": "cs_test_123"},
+            fee_usd=5.0,
+        )
+    )
+    client = UAgentsTreasuryPaymentClient(ctx, "agent1qtreasury")
+
+    result = _run(
+        client.prepare_payment(
+            user_address="agent1quser",
+            session_id="session-abc",
+            shipment=shipment,
+            econ_data=econ,
+            route_data=route,
+            doc_templates=docs,
+        )
+    )
+
+    assert isinstance(ctx.last_call["message"], PaymentSetupRequestMessage)
+    assert result.fee_usd == 5.0
+
+
+def test_treasury_prepare_payment_preserves_checkout_metadata_unchanged():
+    compat_checkout = {
+        "client_secret": "secret_test",
+        "id": "cs_test_123",
+        "checkout_session_id": "cs_test_123",
+        "publishable_key": "pk_test",
+        "currency": "usd",
+        "amount_cents": 500,
+        "ui_mode": "embedded",
+    }
+    shipment = _sample_shipment()
+    econ = _sample_econ()
+    route = _sample_route_data()
+    docs = _sample_docs()
+    ctx = FakeSendContext(
+        reply=PaymentSetupResponseMessage(
+            ok=True,
+            session_id="session-abc",
+            checkout=compat_checkout,
+            fee_usd=5.0,
+        )
+    )
+    client = UAgentsTreasuryPaymentClient(ctx, "agent1qtreasury")
+
+    result = _run(
+        client.prepare_payment(
+            user_address="agent1quser",
+            session_id="session-abc",
+            shipment=shipment,
+            econ_data=econ,
+            route_data=route,
+            doc_templates=docs,
+        )
+    )
+
+    assert result.checkout == compat_checkout
+
+
+def test_treasury_prepare_payment_serializes_central_models():
+    shipment = _sample_shipment()
+    econ = _sample_econ()
+    route = _sample_route_data()
+    docs = _sample_docs()
+    ctx = FakeSendContext(
+        reply=PaymentSetupResponseMessage(
+            ok=True,
+            session_id="session-abc",
+            checkout={"checkout_session_id": "cs_test_123"},
+            fee_usd=5.0,
+        )
+    )
+    client = UAgentsTreasuryPaymentClient(ctx, "agent1qtreasury")
+
+    _run(
+        client.prepare_payment(
+            user_address="agent1quser",
+            session_id="session-abc",
+            shipment=shipment,
+            econ_data=econ,
+            route_data=route,
+            doc_templates=docs,
+        )
+    )
+
+    request = ctx.last_call["message"]
+    assert request.shipment == shipment.model_dump()
+    assert request.econ_data == econ.model_dump()
+    assert request.route_data == route.model_dump()
+    assert request.doc_templates == docs.model_dump()
+
+
+def test_treasury_finalize_payment_returns_settlement_status():
+    status = SettlementStatus(
+        filled_documents={},
+        final_user_prompt="## AeroFreight AI Shipment Quote",
+        payment_hash="cs_test_123",
+    )
+    ctx = FakeSendContext(
+        reply=PaymentFinalizeResponseMessage(
+            ok=True,
+            session_id="session-abc",
+            settlement_status=status.model_dump(),
+        )
+    )
+    client = UAgentsTreasuryPaymentClient(ctx, "agent1qtreasury")
+
+    result = _run(
+        client.finalize_payment(
+            user_address="agent1quser",
+            session_id="session-abc",
+            checkout_session_id="cs_test_123",
+            transaction_id="cs_test_123",
+        )
+    )
+
+    assert isinstance(ctx.last_call["message"], PaymentFinalizeRequestMessage)
+    assert result.payment_hash == "cs_test_123"
+
+
+def test_treasury_setup_failure_raises_remote_treasury_error():
+    shipment = _sample_shipment()
+    econ = _sample_econ()
+    route = _sample_route_data()
+    docs = _sample_docs()
+    ctx = FakeSendContext(raise_on_send=RuntimeError("network down"))
+    client = UAgentsTreasuryPaymentClient(ctx, "agent1qtreasury")
+
+    with pytest.raises(RemoteTreasuryError, match="could not be reached"):
+        _run(
+            client.prepare_payment(
+                user_address="agent1quser",
+                session_id="session-abc",
+                shipment=shipment,
+                econ_data=econ,
+                route_data=route,
+                doc_templates=docs,
+            )
+        )

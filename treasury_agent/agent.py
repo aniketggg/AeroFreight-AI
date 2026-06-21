@@ -7,6 +7,7 @@ import os
 import re
 import tempfile
 from datetime import datetime, timezone
+from typing import Any
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -36,7 +37,12 @@ from shared_models import (
 )
 from treasury_agent.drive_upload import upload_invoice_and_get_link
 from treasury_agent.invoice import generate_invoice_pdf
-from treasury_agent.messages import SettlementRequestMessage, SettlementResultMessage
+from treasury_agent.messages import (
+    PaymentFinalizeRequestMessage,
+    PaymentFinalizeResponseMessage,
+    PaymentSetupRequestMessage,
+    PaymentSetupResponseMessage,
+)
 from treasury_agent.payment_backend import (
     create_settlement_checkout,
     is_configured as stripe_is_configured,
@@ -44,7 +50,9 @@ from treasury_agent.payment_backend import (
     verify_checkout_paid,
 )
 from treasury_agent.payment_protocol import build_payment_protocol
-from treasury_agent.pricing import compute_service_fee
+from treasury_agent.pricing import FeeBreakdown, compute_service_fee
+from orchestrator.payment_trace import payment_trace, summarize_checkout
+from orchestrator.uagents_mailbox import mailbox_registration_policy
 
 DEFAULT_TREASURY_NAME = "aerofreight-treasury-agent"
 DEFAULT_TREASURY_PORT = 8014
@@ -63,6 +71,9 @@ _SAFE_PAYMENT_SETUP_ERROR = (
 _SAFE_PAYMENT_NOT_COMPLETE = (
     "Payment has not been completed yet. "
     "Please finish checkout and try again."
+)
+_SAFE_FINALIZE_ERROR = (
+    "Payment could not be verified. Please try again."
 )
 
 
@@ -129,6 +140,10 @@ def _pending_by_sender_key(sender: str) -> str:
     return f"{STORAGE_PREFIX}by_sender:{sender}"
 
 
+def _finalized_key(checkout_session_id: str) -> str:
+    return f"{STORAGE_PREFIX}finalized:{checkout_session_id}"
+
+
 def _format_location(location: dict) -> str:
     city = str(location.get("city", "")).strip()
     country = str(location.get("country", "")).strip()
@@ -146,14 +161,18 @@ async def _send_chat(ctx: Context, to: str, text: str) -> None:
     )
 
 
-def _parse_settlement_payload(
-    msg: SettlementRequestMessage,
+def _parse_payment_payload(
+    *,
+    shipment: dict[str, Any],
+    econ_data: dict[str, Any],
+    route_data: dict[str, Any],
+    doc_templates: dict[str, Any],
 ) -> tuple[ShipmentRequest, EconData, RouteData, DocTemplates]:
     return (
-        ShipmentRequest.model_validate(msg.shipment),
-        EconData.model_validate(msg.econ_data),
-        RouteData.model_validate(msg.route_data),
-        DocTemplates.model_validate(msg.doc_templates),
+        ShipmentRequest.model_validate(shipment),
+        EconData.model_validate(econ_data),
+        RouteData.model_validate(route_data),
+        DocTemplates.model_validate(doc_templates),
     )
 
 
@@ -165,20 +184,31 @@ def _build_settlement_status(
     invoice_link: str | None,
     docs: DocTemplates,
     route: RouteData,
-    fee_total: float,
+    econ: EconData,
+    fee: FeeBreakdown,
 ) -> SettlementStatus:
-    drive_note = (
-        f"Invoice uploaded to Google Drive: {invoice_link}"
+    route_summary = " → ".join(route.optimal_route_nodes)
+    invoice_line = (
+        f"**Invoice:** {invoice_link}"
         if invoice_link
-        else "Google Drive upload was skipped or unavailable."
+        else "**Invoice:** Google Drive upload was skipped or unavailable."
     )
     prompt = (
-        "Payment completed successfully for your AeroFreight document package.\n\n"
-        f"Service fee paid: ${fee_total:.2f}\n"
-        f"Selected mode: {route.selected_mode}\n"
-        f"Route: {' -> '.join(route.optimal_route_nodes)}\n"
-        f"Stripe reference: {transaction_id}\n\n"
-        f"{drive_note}"
+        "## AeroFreight AI Shipment Quote\n\n"
+        f"**Suggested mode:** {route.selected_mode}\n\n"
+        f"**Route:** {route_summary}\n\n"
+        f"**Freight and transit charges:** "
+        f"${route.freight_and_toll_cost_usd:,.2f} USD\n\n"
+        f"**Entry tax:** ${econ.base_entry_tax_usd:,.2f} USD\n\n"
+        f"**Total landed cost:** ${route.total_landed_cost_usd:,.2f} USD\n\n"
+        f"**AeroFreight service fee:** ${fee.total_fee_usd:,.2f} USD\n\n"
+        f"{invoice_line}\n\n"
+        f"**Stripe reference:** {transaction_id}\n\n"
+        "*Warning: Freight, route, tariff, and customs values in this quote are "
+        "simulated demo values and are not current market prices or legal customs "
+        "assessments.*\n\n"
+        "*Stripe ran in test mode when test keys are configured.*\n\n"
+        "Type NEW SHIPMENT to begin another workflow."
     )
     filled_documents = {
         "required_form_names": docs.required_form_names,
@@ -194,8 +224,18 @@ def _build_settlement_status(
     )
 
 
-async def _start_settlement(
-    ctx: Context,
+def _build_checkout_description(
+    shipment: ShipmentRequest,
+    route: RouteData,
+) -> str:
+    return (
+        f"Shipment {_format_location(shipment.origin)} -> "
+        f"{_format_location(shipment.destination)}, "
+        f"{route.selected_mode} mode, {len(route.countries_visited)} countries"
+    )
+
+
+async def _create_checkout_setup(
     *,
     user_address: str,
     session_id: str,
@@ -203,114 +243,109 @@ async def _start_settlement(
     econ: EconData,
     route: RouteData,
     docs: DocTemplates,
-    orchestrator_address: str,
-) -> None:
+    orchestrator_address: str = "",
+) -> dict[str, Any]:
+    """Create Stripe checkout and pending settlement state."""
     if not stripe_is_configured():
-        await _send_chat(
-            ctx,
-            user_address,
-            "Payment is not configured on this agent right now.",
-        )
-        if orchestrator_address:
-            await ctx.send(
-                orchestrator_address,
-                SettlementResultMessage(
-                    ok=False,
-                    session_id=session_id,
-                    error="Payment is not configured on this agent.",
-                ),
-            )
-        return
+        return {
+            "ok": False,
+            "session_id": session_id,
+            "error": "Payment is not configured on this agent.",
+        }
 
     fee = compute_service_fee(econ, route)
-    description = (
-        f"Shipment {_format_location(shipment.origin)} -> "
-        f"{_format_location(shipment.destination)}, "
-        f"{route.selected_mode} mode, {len(route.countries_visited)} countries"
-    )
     checkout = await asyncio.to_thread(
         create_settlement_checkout,
         user_address=user_address,
         session_id=session_id,
         amount_usd=fee.total_fee_usd,
-        description=description,
+        description=_build_checkout_description(shipment, route),
     )
     if not checkout:
-        await _send_chat(ctx, user_address, _SAFE_PAYMENT_SETUP_ERROR)
-        if orchestrator_address:
-            await ctx.send(
-                orchestrator_address,
-                SettlementResultMessage(
-                    ok=False,
-                    session_id=session_id,
-                    error=_SAFE_PAYMENT_SETUP_ERROR,
-                ),
-            )
-        return
+        return {
+            "ok": False,
+            "session_id": session_id,
+            "error": _SAFE_PAYMENT_SETUP_ERROR,
+        }
+
+    checkout_summary = summarize_checkout(checkout)
+    payment_trace(
+        None,
+        "treasury.setup.checkout_created",
+        session_id=session_id,
+        fee_usd=fee.total_fee_usd,
+        checkout_key_names=checkout_summary["checkout_key_names"],
+        ui_mode=checkout_summary["ui_mode"],
+        has_client_secret=checkout_summary["has_client_secret"],
+        has_id=checkout_summary["has_id"],
+        has_checkout_session_id=checkout_summary["has_checkout_session_id"],
+    )
 
     checkout_session_id = checkout["checkout_session_id"]
-    ctx.storage.set(
-        _pending_key(checkout_session_id),
-        {
-            "user_address": user_address,
-            "session_id": session_id,
-            "orchestrator_address": orchestrator_address,
-            "fee_usd": fee.total_fee_usd,
-            "shipment": shipment.model_dump(),
-            "econ_data": econ.model_dump(),
-            "route_data": route.model_dump(),
-            "doc_templates": docs.model_dump(),
-        },
-    )
+    pending = {
+        "user_address": user_address,
+        "session_id": session_id,
+        "orchestrator_address": orchestrator_address,
+        "fee_usd": fee.total_fee_usd,
+        "shipment": shipment.model_dump(),
+        "econ_data": econ.model_dump(),
+        "route_data": route.model_dump(),
+        "doc_templates": docs.model_dump(),
+        "checkout_session_id": checkout_session_id,
+        "finalized": False,
+    }
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "checkout": checkout,
+        "fee_usd": fee.total_fee_usd,
+        "checkout_session_id": checkout_session_id,
+        "pending": pending,
+    }
+
+
+def _store_pending_settlement(
+    ctx: Context,
+    *,
+    pending: dict,
+    checkout_session_id: str,
+    user_address: str,
+) -> None:
+    ctx.storage.set(_pending_key(checkout_session_id), pending)
     ctx.storage.set(_pending_by_sender_key(user_address), checkout_session_id)
 
-    await ctx.send(
-        user_address,
-        RequestPayment(
-            accepted_funds=[
-                Funds(
-                    currency="USD",
-                    amount=f"{fee.total_fee_usd:.2f}",
-                    payment_method="stripe",
-                )
-            ],
-            recipient=str(ctx.agent.address),
-            deadline_seconds=1800,
-            reference=session_id,
-            description=(
-                f"Pay ${fee.total_fee_usd:.2f} to receive your "
-                "AeroFreight document package."
-            ),
-            metadata={
-                "stripe": checkout,
-                "service": "aerofreight_settlement_package",
-            },
-        ),
-    )
 
-
-async def _finalize_checkout(
+async def execute_settlement_finalization(
     ctx: Context,
-    sender: str,
+    *,
     checkout_session_id: str,
     transaction_id: str,
-) -> None:
+    expected_session_id: str | None = None,
+    expected_user_address: str | None = None,
+) -> tuple[bool, SettlementStatus | None, str | None]:
+    """Verify Stripe payment, generate invoice, and build settlement status."""
+    finalized = ctx.storage.get(_finalized_key(checkout_session_id))
+    if isinstance(finalized, dict) and finalized.get("final_user_prompt"):
+        status = SettlementStatus.model_validate(finalized)
+        return True, status, None
+
     pending = ctx.storage.get(_pending_key(checkout_session_id))
     if not pending:
-        reason = "No matching payment request found."
-        await ctx.send(sender, RejectPayment(reason=reason))
-        await _send_chat(ctx, sender, reason)
-        return
+        return False, None, "No matching payment request found."
+
+    if pending.get("finalized"):
+        status = SettlementStatus.model_validate(pending["settlement_status"])
+        ctx.storage.set(_finalized_key(checkout_session_id), status.model_dump())
+        return True, status, None
+
+    if expected_session_id and pending.get("session_id") != expected_session_id:
+        return False, None, _SAFE_FINALIZE_ERROR
+    if expected_user_address and pending.get("user_address") != expected_user_address:
+        return False, None, _SAFE_FINALIZE_ERROR
 
     paid = await asyncio.to_thread(verify_checkout_paid, checkout_session_id)
     if not paid:
-        reason = _SAFE_PAYMENT_NOT_COMPLETE
-        await ctx.send(sender, RejectPayment(reason=reason))
-        await _send_chat(ctx, sender, reason)
-        return
-
-    await ctx.send(sender, CompletePayment(transaction_id=transaction_id))
-    ctx.storage.remove(_pending_key(checkout_session_id))
+        return False, None, _SAFE_PAYMENT_NOT_COMPLETE
 
     shipment = ShipmentRequest.model_validate(pending["shipment"])
     econ = EconData.model_validate(pending["econ_data"])
@@ -351,49 +386,143 @@ async def _finalize_checkout(
         invoice_link=invoice_link,
         docs=docs,
         route=route,
-        fee_total=pending["fee_usd"],
+        econ=econ,
+        fee=fee,
     )
 
-    user_address = pending["user_address"]
-    if invoice_link:
-        message = (
-            f"Payment received (${pending['fee_usd']:.2f}). "
-            f"Your invoice is ready:\n\n{invoice_link}"
-        )
-    else:
-        message = settlement_status.final_user_prompt
+    pending["finalized"] = True
+    pending["settlement_status"] = settlement_status.model_dump()
+    ctx.storage.set(_pending_key(checkout_session_id), pending)
+    ctx.storage.set(_finalized_key(checkout_session_id), settlement_status.model_dump())
+    ctx.storage.remove(_pending_by_sender_key(pending["user_address"]))
 
-    await _send_chat(ctx, user_address, message)
+    return True, settlement_status, None
 
-    orchestrator_address = pending.get("orchestrator_address", "")
-    if orchestrator_address:
-        await ctx.send(
-            orchestrator_address,
-            SettlementResultMessage(
-                ok=True,
-                session_id=pending["session_id"],
-                settlement_status=settlement_status.model_dump(),
+
+async def _send_standalone_request_payment(
+    ctx: Context,
+    *,
+    user_address: str,
+    session_id: str,
+    fee_usd: float,
+    checkout: dict[str, Any],
+) -> None:
+    await ctx.send(
+        user_address,
+        RequestPayment(
+            accepted_funds=[
+                Funds(
+                    currency="USD",
+                    amount=f"{fee_usd:.2f}",
+                    payment_method="stripe",
+                )
+            ],
+            recipient=str(ctx.agent.address),
+            deadline_seconds=1800,
+            reference=session_id,
+            description=(
+                f"Pay ${fee_usd:.2f} to receive your "
+                "AeroFreight document package."
             ),
-        )
+            metadata={
+                "stripe": checkout,
+                "service": "aerofreight_settlement_package",
+            },
+        ),
+    )
+
+
+async def _start_settlement(
+    ctx: Context,
+    *,
+    user_address: str,
+    session_id: str,
+    shipment: ShipmentRequest,
+    econ: EconData,
+    route: RouteData,
+    docs: DocTemplates,
+    orchestrator_address: str,
+) -> None:
+    """Standalone Treasury demo flow: create checkout and send RequestPayment."""
+    setup = await _create_checkout_setup(
+        user_address=user_address,
+        session_id=session_id,
+        shipment=shipment,
+        econ=econ,
+        route=route,
+        docs=docs,
+        orchestrator_address=orchestrator_address,
+    )
+    if not setup["ok"]:
+        await _send_chat(ctx, user_address, setup.get("error", _SAFE_PAYMENT_SETUP_ERROR))
+        return
+
+    _store_pending_settlement(
+        ctx,
+        pending=setup["pending"],
+        checkout_session_id=setup["checkout_session_id"],
+        user_address=user_address,
+    )
+    await _send_standalone_request_payment(
+        ctx,
+        user_address=user_address,
+        session_id=session_id,
+        fee_usd=setup["fee_usd"],
+        checkout=setup["checkout"],
+    )
+
+
+async def _finalize_checkout(
+    ctx: Context,
+    sender: str,
+    checkout_session_id: str,
+    transaction_id: str,
+) -> None:
+    """Standalone Treasury commit flow using the shared finalization core."""
+    ok, settlement_status, error = await execute_settlement_finalization(
+        ctx,
+        checkout_session_id=checkout_session_id,
+        transaction_id=transaction_id,
+    )
+    if not ok or settlement_status is None:
+        reason = error or _SAFE_FINALIZE_ERROR
+        await ctx.send(sender, RejectPayment(reason=reason))
+        await _send_chat(ctx, sender, reason)
+        return
+
+    await ctx.send(sender, CompletePayment(transaction_id=transaction_id))
+    ctx.storage.remove(_pending_key(checkout_session_id))
+    await _send_chat(ctx, sender, settlement_status.final_user_prompt)
 
 
 def _register_settlement_handlers(agent: Agent, orchestrator_address: str) -> None:
     @settlement_protocol.on_message(
-        model=SettlementRequestMessage,
-        replies=SettlementResultMessage,
+        model=PaymentSetupRequestMessage,
+        replies=PaymentSetupResponseMessage,
     )
-    async def on_settlement_request(
+    async def on_payment_setup(
         ctx: Context,
         sender: str,
-        msg: SettlementRequestMessage,
+        msg: PaymentSetupRequestMessage,
     ) -> None:
+        payment_trace(
+            ctx.logger,
+            "treasury.setup.received",
+            session_id=msg.session_id,
+            sender=sender,
+        )
         try:
-            shipment, econ, route, docs = _parse_settlement_payload(msg)
+            shipment, econ, route, docs = _parse_payment_payload(
+                shipment=msg.shipment,
+                econ_data=msg.econ_data,
+                route_data=msg.route_data,
+                doc_templates=msg.doc_templates,
+            )
         except ValidationError:
-            ctx.logger.error("Settlement request validation failed")
+            ctx.logger.error("Payment setup validation failed")
             await ctx.send(
                 sender,
-                SettlementResultMessage(
+                PaymentSetupResponseMessage(
                     ok=False,
                     session_id=msg.session_id,
                     error=_SAFE_VALIDATION_ERROR,
@@ -401,8 +530,7 @@ def _register_settlement_handlers(agent: Agent, orchestrator_address: str) -> No
             )
             return
 
-        await _start_settlement(
-            ctx,
+        setup = await _create_checkout_setup(
             user_address=msg.user_address,
             session_id=msg.session_id,
             shipment=shipment,
@@ -410,6 +538,90 @@ def _register_settlement_handlers(agent: Agent, orchestrator_address: str) -> No
             route=route,
             docs=docs,
             orchestrator_address=orchestrator_address or sender,
+        )
+        if not setup["ok"]:
+            await ctx.send(
+                sender,
+                PaymentSetupResponseMessage(
+                    ok=False,
+                    session_id=msg.session_id,
+                    error=setup.get("error", _SAFE_PAYMENT_SETUP_ERROR),
+                ),
+            )
+            return
+
+        _store_pending_settlement(
+            ctx,
+            pending=setup["pending"],
+            checkout_session_id=setup["checkout_session_id"],
+            user_address=msg.user_address,
+        )
+        response = PaymentSetupResponseMessage(
+            ok=True,
+            session_id=msg.session_id,
+            checkout=setup["checkout"],
+            fee_usd=setup["fee_usd"],
+        )
+        response_summary = summarize_checkout(response.checkout)
+        payment_trace(
+            ctx.logger,
+            "treasury.setup.response_built",
+            session_id=msg.session_id,
+            sender=sender,
+            fee_usd=setup["fee_usd"],
+            response_model_class=type(response).__name__,
+            response_ok=response.ok,
+            checkout_key_names=response_summary["checkout_key_names"],
+            ui_mode=response_summary["ui_mode"],
+            has_client_secret=response_summary["has_client_secret"],
+            has_id=response_summary["has_id"],
+            has_checkout_session_id=response_summary["has_checkout_session_id"],
+        )
+        await ctx.send(sender, response)
+        payment_trace(
+            ctx.logger,
+            "treasury.setup.response_sent",
+            session_id=msg.session_id,
+            sender=sender,
+            response_model_class=type(response).__name__,
+            response_ok=response.ok,
+        )
+
+    @settlement_protocol.on_message(
+        model=PaymentFinalizeRequestMessage,
+        replies=PaymentFinalizeResponseMessage,
+    )
+    async def on_payment_finalize(
+        ctx: Context,
+        sender: str,
+        msg: PaymentFinalizeRequestMessage,
+    ) -> None:
+        ok, settlement_status, error = await execute_settlement_finalization(
+            ctx,
+            checkout_session_id=msg.checkout_session_id,
+            transaction_id=msg.transaction_id,
+            expected_session_id=msg.session_id,
+            expected_user_address=msg.user_address,
+        )
+        if not ok or settlement_status is None:
+            await ctx.send(
+                sender,
+                PaymentFinalizeResponseMessage(
+                    ok=False,
+                    session_id=msg.session_id,
+                    error=error or _SAFE_FINALIZE_ERROR,
+                ),
+            )
+            return
+
+        ctx.storage.remove(_pending_key(msg.checkout_session_id))
+        await ctx.send(
+            sender,
+            PaymentFinalizeResponseMessage(
+                ok=True,
+                session_id=msg.session_id,
+                settlement_status=settlement_status.model_dump(),
+            ),
         )
 
     agent.include(settlement_protocol)
@@ -544,6 +756,7 @@ def create_treasury_agent(
         port=_resolve_treasury_port(port),
         mailbox=True,
         publish_agent_details=True,
+        registration_policy=mailbox_registration_policy(),
     )
     _register_settlement_handlers(agent, resolved_orchestrator)
     _register_payment_handlers(agent)

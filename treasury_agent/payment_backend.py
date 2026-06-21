@@ -10,6 +10,12 @@ try:
 except ImportError:  # pragma: no cover
     stripe = None
 
+from orchestrator.payment_trace import (
+    payment_trace,
+    safe_stripe_error_message,
+    summarize_checkout,
+)
+
 
 _DEFAULT_RETURN_URL = "https://agentverse.ai"
 
@@ -69,6 +75,13 @@ def create_settlement_checkout(
         return None
     config = _cfg()
     amount_cents = int(round(amount_usd * 100))
+    payment_trace(
+        None,
+        "stripe.create.start",
+        session_id=session_id,
+        amount_cents=amount_cents,
+        currency=config["currency"],
+    )
     try:
         return_url = (
             f"{config['return_url']}?session_id={{CHECKOUT_SESSION_ID}}"
@@ -103,15 +116,43 @@ def create_settlement_checkout(
                 "service": "aerofreight_settlement_package",
             },
         )
-        return {
+        # Stripe API uses ui_mode="embedded_page"; Fetch/ASI payment renderers expect
+        # ui_mode="embedded" in protocol metadata. Both id and checkout_session_id
+        # are included for agent-tooling compatibility.
+        checkout = {
             "client_secret": session.client_secret,
+            "id": session.id,
             "checkout_session_id": session.id,
             "publishable_key": config["publishable_key"],
             "currency": config["currency"],
             "amount_cents": amount_cents,
-            "ui_mode": "embedded_page",
+            "ui_mode": "embedded",
         }
-    except Exception:
+        summary = summarize_checkout(checkout)
+        payment_trace(
+            None,
+            "stripe.create.success",
+            session_id=session_id,
+            stripe_session_id=session.id,
+            ui_mode_sent_to_stripe="embedded_page",
+            checkout_metadata_ui_mode=summary["ui_mode"],
+            checkout_key_names=summary["checkout_key_names"],
+            has_client_secret=summary["has_client_secret"],
+            has_id=summary["has_id"],
+            has_checkout_session_id=summary["has_checkout_session_id"],
+            id_aliases_match=summary["id_aliases_match"],
+            currency=summary["currency"],
+            amount_cents=summary["amount_cents"],
+        )
+        return checkout
+    except Exception as exc:
+        payment_trace(
+            None,
+            "stripe.create.failure",
+            session_id=session_id,
+            exception_class=type(exc).__name__,
+            error_message=safe_stripe_error_message(exc),
+        )
         return None
 
 

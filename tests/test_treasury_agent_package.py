@@ -130,10 +130,14 @@ def _run(coro):
 def test_finalize_checkout_does_not_claim_paid_without_verification(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    from treasury_agent.agent import _finalize_checkout
+    from treasury_agent.agent import _finalize_checkout, _pending_key
 
     ctx = MagicMock()
-    ctx.storage.get.return_value = {
+    storage: dict = {}
+    ctx.storage.get.side_effect = storage.get
+    ctx.storage.set.side_effect = storage.__setitem__
+    ctx.storage.remove.side_effect = lambda key: storage.pop(key, None)
+    storage[_pending_key("cs_test_123")] = {
         "user_address": "agent1quser",
         "session_id": "session-1",
         "orchestrator_address": "",
@@ -163,7 +167,7 @@ def test_finalize_checkout_builds_settlement_status_on_success(
     monkeypatch: pytest.MonkeyPatch,
 ):
     from shared_models import DocTemplates, EconData, Item, RouteData, ShipmentRequest
-    from treasury_agent.agent import _finalize_checkout
+    from treasury_agent.agent import _finalize_checkout, _pending_key
 
     shipment = ShipmentRequest(
         origin={"country": "CN", "state": "Guangdong", "city": "Shenzhen"},
@@ -193,7 +197,11 @@ def test_finalize_checkout_builds_settlement_status_on_success(
     )
 
     ctx = MagicMock()
-    ctx.storage.get.return_value = {
+    storage: dict = {}
+    ctx.storage.get.side_effect = storage.get
+    ctx.storage.set.side_effect = storage.__setitem__
+    ctx.storage.remove.side_effect = lambda key: storage.pop(key, None)
+    storage[_pending_key("cs_test_123")] = {
         "user_address": "agent1quser",
         "session_id": "session-1",
         "orchestrator_address": "agent1qorch",
@@ -202,6 +210,7 @@ def test_finalize_checkout_builds_settlement_status_on_success(
         "econ_data": econ.model_dump(),
         "route_data": route.model_dump(),
         "doc_templates": docs.model_dump(),
+        "finalized": False,
     }
     ctx.send = AsyncMock()
     ctx.logger = MagicMock()
@@ -213,11 +222,106 @@ def test_finalize_checkout_builds_settlement_status_on_success(
     ):
         _run(_finalize_checkout(ctx, "agent1quser", "cs_test_123", "cs_test_123"))
 
-    result_messages = [
+    chat_messages = [
         call.args[1]
         for call in ctx.send.call_args_list
-        if call.args[1].__class__.__name__ == "SettlementResultMessage"
+        if call.args[1].__class__.__name__ == "ChatMessage"
     ]
-    assert result_messages
-    assert result_messages[0].ok is True
-    assert result_messages[0].settlement_status["payment_hash"] == "cs_test_123"
+    assert chat_messages
+    assert "Shipment Quote" in chat_messages[-1].content[0].text
+    assert "cs_test_123" in chat_messages[-1].content[0].text
+
+
+def test_payment_setup_handler_returns_checkout_without_request_payment():
+    from uagents import Model
+    from uagents_core.contrib.protocols.payment import RequestPayment
+
+    from shared_models import DocTemplates, EconData, Item, RouteData, ShipmentRequest
+    from treasury_agent.agent import create_treasury_agent, settlement_protocol
+    from treasury_agent.messages import (
+        PaymentSetupRequestMessage,
+        PaymentSetupResponseMessage,
+    )
+
+    _ensure_event_loop()
+    create_treasury_agent(seed=TEST_TREASURY_SEED)
+
+    digest = Model.build_schema_digest(PaymentSetupRequestMessage)
+    handler = settlement_protocol._signed_message_handlers[digest]
+
+    shipment = ShipmentRequest(
+        origin={"country": "CN", "state": "Guangdong", "city": "Shenzhen"},
+        destination={"country": "US", "state": "TX", "city": "Austin"},
+        items=[Item(name="Electronics", quantity=10, category="electronics")],
+        total_weight_kg=850.0,
+        total_volume_cbm=3.2,
+        timeframe="COST",
+        declared_value_usd=4200.0,
+    )
+    econ = EconData(
+        transport_preference="EITHER",
+        is_high_value=True,
+        is_luxury=False,
+        base_entry_tax_usd=126.50,
+    )
+    route = RouteData(
+        selected_mode="SHIP",
+        optimal_route_nodes=["Shenzhen", "USLAX", "Austin"],
+        countries_visited=["CN", "US"],
+        freight_and_toll_cost_usd=645.0,
+        total_landed_cost_usd=771.25,
+    )
+    docs = DocTemplates(
+        required_form_names=["CBP Form 7501"],
+        blank_form_structures={"CBP Form 7501": {"status": "demo"}},
+    )
+    request = PaymentSetupRequestMessage(
+        user_address="agent1quser",
+        session_id="session-async-1",
+        shipment=shipment.model_dump(),
+        econ_data=econ.model_dump(),
+        route_data=route.model_dump(),
+        doc_templates=docs.model_dump(),
+    )
+
+    ctx = MagicMock()
+    ctx.storage = MagicMock()
+    ctx.send = AsyncMock()
+    ctx.logger = MagicMock()
+    ctx.agent = MagicMock()
+    ctx.agent.address = "agent1qtreasury"
+
+    checkout = {
+        "client_secret": "secret_test",
+        "id": "cs_test_async",
+        "checkout_session_id": "cs_test_async",
+        "publishable_key": "pk_test",
+        "currency": "usd",
+        "amount_cents": 500,
+        "ui_mode": "embedded",
+    }
+
+    with (
+        patch("treasury_agent.agent.stripe_is_configured", return_value=True),
+        patch(
+            "treasury_agent.agent.create_settlement_checkout",
+            return_value=checkout,
+        ),
+    ):
+        _run(handler(ctx, "agent1qorch", request))
+
+    setup_responses = [
+        call.args[1]
+        for call in ctx.send.call_args_list
+        if isinstance(call.args[1], PaymentSetupResponseMessage)
+    ]
+    assert len(setup_responses) == 1
+    assert setup_responses[0].ok is True
+    assert setup_responses[0].checkout == checkout
+
+    payment_requests = [
+        call
+        for call in ctx.send.call_args_list
+        if isinstance(call.args[1], RequestPayment)
+    ]
+    assert payment_requests == []

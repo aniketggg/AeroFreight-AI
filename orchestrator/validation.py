@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from shared_models import Item, ShipmentRequest
 
+from orchestrator.location_normalization import (
+    US_COUNTRY_CODE,
+    canonicalize_country,
+    is_us_country,
+)
 from orchestrator.models import PartialShipmentData
 
 REQUIRED_LOCATION_FIELDS = ("country", "state", "city")
@@ -115,14 +120,16 @@ def validate_business_rules(data: PartialShipmentData) -> list[str]:
     """Return readable validation errors without raising exceptions."""
     errors: list[str] = []
 
-    if data.destination and data.destination.get("country"):
-        dest_country = str(data.destination["country"]).strip().upper()
-        if dest_country != "US":
-            errors.append("The destination country must be the United States (US).")
+    if data.destination:
+        dest_country = data.destination.get("country")
+        if not _is_blank(dest_country) and not is_us_country(dest_country):
+            errors.append(
+                "The explicit destination country is outside the United States."
+            )
 
     if data.origin and data.origin.get("country"):
-        origin_country = str(data.origin["country"]).strip().upper()
-        if origin_country == "US":
+        origin_country = canonicalize_country(data.origin.get("country"))
+        if origin_country == US_COUNTRY_CODE:
             errors.append("The origin country cannot be the United States.")
 
     if data.total_weight_kg is not None and data.total_weight_kg <= 0:
@@ -181,10 +188,13 @@ def build_shipment_request(data: PartialShipmentData) -> ShipmentRequest:
     assert data.total_volume_cbm is not None
     assert data.declared_value_usd is not None
 
-    origin = {**data.origin, "country": str(data.origin["country"]).strip().upper()}
+    origin = {
+        **data.origin,
+        "country": canonicalize_country(data.origin["country"]),
+    }
     destination = {
         **data.destination,
-        "country": str(data.destination["country"]).strip().upper(),
+        "country": canonicalize_country(data.destination["country"]),
     }
 
     items = [

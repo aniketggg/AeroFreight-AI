@@ -48,12 +48,48 @@ def test_create_settlement_checkout_uses_stripe_mock():
 
     assert result is not None
     assert result["checkout_session_id"] == "cs_test_123"
+    assert result["id"] == "cs_test_123"
+    assert result["checkout_session_id"] == result["id"]
     assert result["client_secret"] == "secret_test"
     assert result["publishable_key"] == "pk_test"
     assert result["currency"] == "usd"
     assert result["amount_cents"] == 1234
-    assert result["ui_mode"] == "embedded_page"
+    assert result["ui_mode"] == "embedded"
+    assert "secret_key" not in result
     mock_client.checkout.Session.create.assert_called_once()
+
+
+def test_fetch_checkout_metadata_includes_both_session_id_aliases():
+    patches, mock_client, _ = _mock_checkout_context()
+    with patches[0], patches[1], patches[2], patches[3]:
+        result = payment_backend.create_settlement_checkout(
+            user_address="agent1quser",
+            session_id="session-1",
+            amount_usd=10.0,
+            description="demo",
+        )
+
+    assert result is not None
+    assert "id" in result
+    assert "checkout_session_id" in result
+    assert result["id"] == result["checkout_session_id"] == "cs_test_123"
+    assert result["ui_mode"] == "embedded"
+    assert mock_client.checkout.Session.create.call_args.kwargs["ui_mode"] == "embedded_page"
+
+
+def test_fetch_checkout_metadata_excludes_stripe_secret_key():
+    patches, _, _ = _mock_checkout_context()
+    with patches[0], patches[1], patches[2], patches[3]:
+        result = payment_backend.create_settlement_checkout(
+            user_address="agent1quser",
+            session_id="session-1",
+            amount_usd=10.0,
+            description="demo",
+        )
+
+    assert result is not None
+    assert "secret_key" not in result
+    assert "sk_test" not in result.values()
 
 
 def test_session_create_uses_embedded_page_and_redirect_if_required():

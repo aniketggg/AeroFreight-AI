@@ -14,7 +14,14 @@ from shared_models import (
     ShipmentRequest,
     Item,
 )
-from treasury_agent.messages import SettlementRequestMessage, SettlementResultMessage
+from treasury_agent.messages import (
+    PaymentFinalizeRequestMessage,
+    PaymentFinalizeResponseMessage,
+    PaymentSetupRequestMessage,
+    PaymentSetupResponseMessage,
+    SettlementRequestMessage,
+    SettlementResultMessage,
+)
 
 
 def _valid_payload() -> dict:
@@ -57,11 +64,15 @@ def _valid_payload() -> dict:
 def test_wire_messages_are_uagents_models():
     assert issubclass(SettlementRequestMessage, Model)
     assert issubclass(SettlementResultMessage, Model)
+    assert issubclass(PaymentSetupRequestMessage, Model)
+    assert issubclass(PaymentSetupResponseMessage, Model)
+    assert issubclass(PaymentFinalizeRequestMessage, Model)
+    assert issubclass(PaymentFinalizeResponseMessage, Model)
 
 
-def test_wire_request_validates_into_central_models():
+def test_payment_setup_request_validates_into_central_models():
     payload = _valid_payload()
-    message = SettlementRequestMessage(**payload)
+    message = PaymentSetupRequestMessage(**payload)
 
     assert ShipmentRequest.model_validate(message.shipment)
     assert EconData.model_validate(message.econ_data)
