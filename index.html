@@ -580,11 +580,20 @@ let items = [];               // {name, quantity, unit, category}
 let mode = "SPEED";
 const TOTAL = 4;
 
-/* live UTC clock */
+/* live Pacific Time clock */
+const PT_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Los_Angeles",
+  hour: "2-digit", minute: "2-digit", second: "2-digit",
+  hour12: false,
+});
+const PT_TZ_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Los_Angeles",
+  timeZoneName: "short",
+});
 function tick(){
   const d = new Date();
-  const p = n => String(n).padStart(2,"0");
-  $("#clk").textContent = `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} Z`;
+  const tzLabel = PT_TZ_FORMATTER.formatToParts(d).find(p => p.type === "timeZoneName")?.value || "PT";
+  $("#clk").textContent = `${PT_FORMATTER.format(d)} ${tzLabel}`;
 }
 setInterval(tick,1000); tick();
 
