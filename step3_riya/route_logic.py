@@ -5,6 +5,7 @@ from math import asin, cos, radians, sin, sqrt
 from typing import Iterable, Literal
 
 from routing_models import RouteData, RoutingRequest
+from airport_data import airports_in_country
 
 Mode = Literal["AIR", "SHIP"]
 
@@ -143,39 +144,159 @@ def _route_metadata(request: RoutingRequest, hub: Hub) -> tuple[list[str], list[
 
 def build_air_quote(request: RoutingRequest) -> CandidateQuote:
     shipment = request.shipment
-    origin = resolve_coordinates(shipment.origin)
-    destination = resolve_coordinates(shipment.destination)
+
+    origin_city_coordinates = resolve_coordinates(shipment.origin)
+    destination_city_coordinates = resolve_coordinates(
+        shipment.destination
+    )
+
+    origin_country = str(
+        shipment.origin.get("country", "")
+    ).strip().upper()
+
+    destination_country = str(
+        shipment.destination.get("country", "")
+    ).strip().upper()
+
+    if destination_country != "US":
+        raise ValueError(
+            "AIR routing currently requires a U.S. destination."
+        )
+
+    origin_airports = airports_in_country(origin_country)
+    destination_airports = airports_in_country(
+        destination_country
+    )
+
+    if not origin_airports:
+        raise ValueError(
+            f"No origin airports found for {origin_country}."
+        )
+
+    if not destination_airports:
+        raise ValueError(
+            f"No destination airports found for "
+            f"{destination_country}."
+        )
+
+    # Leg 1: starting city to nearest origin airport.
+    origin_airport = min(
+        origin_airports,
+        key=lambda airport: haversine_km(
+            origin_city_coordinates,
+            (airport.latitude, airport.longitude),
+        ),
+    )
+
+    origin_inland_km = haversine_km(
+        origin_city_coordinates,
+        (
+            origin_airport.latitude,
+            origin_airport.longitude,
+        ),
+    )
+
     chargeable_weight_kg = max(
         shipment.total_weight_kg,
-        shipment.total_volume_cbm * AIR_VOLUMETRIC_KG_PER_CBM,
+        shipment.total_volume_cbm
+        * AIR_VOLUMETRIC_KG_PER_CBM,
+    )
+
+    origin_city_name = str(
+        shipment.origin.get("city", "Origin")
+    )
+
+    destination_city_name = str(
+        shipment.destination.get("city", "Destination")
     )
 
     candidates: list[CandidateQuote] = []
-    for hub in AIR_HUBS:
-        international_km = haversine_km(origin, (hub.latitude, hub.longitude))
-        inland_km = haversine_km((hub.latitude, hub.longitude), destination)
 
-        # Simulated hackathon pricing, not a live carrier quote.
+    for airport in destination_airports:
+        hub = Hub(
+            code=airport.code,
+            name=airport.name,
+            latitude=airport.latitude,
+            longitude=airport.longitude,
+        )
+
+        # Leg 2: origin airport to destination airport.
+        international_km = haversine_km(
+            (
+                origin_airport.latitude,
+                origin_airport.longitude,
+            ),
+            (
+                airport.latitude,
+                airport.longitude,
+            ),
+        )
+
+        # Leg 3: destination airport to final city.
+        destination_inland_km = haversine_km(
+            (
+                airport.latitude,
+                airport.longitude,
+            ),
+            destination_city_coordinates,
+        )
+
         freight = 125.0 + chargeable_weight_kg * (
             1.10 + 0.00018 * international_km
         )
-        route_charges = 95.0 + 0.02 * chargeable_weight_kg
-        inland = _road_miles(inland_km) * TRUCKING_RATE_USD_PER_MILE
-        route_nodes, countries = _route_metadata(request, hub)
+
+        route_charges = (
+            95.0 + 0.02 * chargeable_weight_kg
+        )
+
+        origin_inland_cost = (
+            _road_miles(origin_inland_km)
+            * TRUCKING_RATE_USD_PER_MILE
+        )
+
+        destination_inland_cost = (
+            _road_miles(destination_inland_km)
+            * TRUCKING_RATE_USD_PER_MILE
+        )
+
+        total_inland_cost = (
+            origin_inland_cost
+            + destination_inland_cost
+        )
 
         candidates.append(
             CandidateQuote(
                 mode="AIR",
                 hub=hub,
-                route_nodes=route_nodes,
-                countries_visited=countries,
+                route_nodes=[
+                    origin_city_name,
+                    origin_airport.code,
+                    hub.code,
+                    destination_city_name,
+                ],
+                countries_visited=_unique(
+                    [
+                        origin_country,
+                        destination_country,
+                    ]
+                ),
                 freight_cost_usd=round(freight, 2),
-                inland_trucking_cost_usd=round(inland, 2),
-                tolls_and_route_tariffs_usd=round(route_charges, 2),
+                inland_trucking_cost_usd=round(
+                    total_inland_cost,
+                    2,
+                ),
+                tolls_and_route_tariffs_usd=round(
+                    route_charges,
+                    2,
+                ),
             )
         )
 
-    return min(candidates, key=lambda quote: quote.transport_subtotal_usd)
+    return min(
+        candidates,
+        key=lambda quote: quote.transport_subtotal_usd,
+    )
+
 
 
 def build_ship_quote(request: RoutingRequest) -> CandidateQuote:
