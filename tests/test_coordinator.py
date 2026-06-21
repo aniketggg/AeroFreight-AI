@@ -30,6 +30,7 @@ class FakeExtractor:
         self,
         user_message: str,
         current_data: PartialShipmentData,
+        conversation_history=None,
     ) -> PartialShipmentData:
         if self.responses:
             return self.responses.pop(0)

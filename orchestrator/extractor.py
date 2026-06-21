@@ -11,7 +11,7 @@ from anthropic import Anthropic, AuthenticationError, RateLimitError
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from orchestrator.models import PartialItem, PartialShipmentData
+from orchestrator.models import PartialItem, PartialShipmentData, ChatTurn
 
 load_dotenv()
 
@@ -21,7 +21,7 @@ SYSTEM_INSTRUCTIONS = """You extract shipment information for a freight forwardi
 
 Rules:
 - Extract shipment fields from the latest user message.
-- Use current data only as context.
+- Use the previous conversation and current partial data to resolve references such as "item 1", "that destination", or "same as before".
 - Preserve existing information unless the user clearly corrects it.
 - Return null for unknown fields.
 - Never invent weight, volume, declared value, quantity, location, or timeframe.
@@ -72,8 +72,30 @@ class ShipmentExtractor(Protocol):
         self,
         user_message: str,
         current_data: PartialShipmentData,
+        conversation_history: list[ChatTurn] | None = None,
     ) -> PartialShipmentData:
         ...
+
+
+def build_extraction_user_content(
+    *,
+    user_message: str,
+    current_data: PartialShipmentData,
+    conversation_history: list[ChatTurn] | None = None,
+) -> str:
+    """Build the user prompt for Claude including prior collection context."""
+    parts = [
+        "Current partial shipment data:",
+        json.dumps(current_data.model_dump(mode="json"), indent=2),
+    ]
+    history = conversation_history or []
+    if history:
+        parts.append("\nPrevious conversation during shipment collection:")
+        for turn in history:
+            speaker = "User" if turn.role == "user" else "Assistant"
+            parts.append(f"{speaker}: {turn.content}")
+    parts.extend(["\nLatest user message:", user_message])
+    return "\n".join(parts)
 
 
 def _location_to_dict(location: ExtractionLocation | None) -> dict | None:
@@ -123,16 +145,16 @@ class ClaudeShipmentExtractor:
         self,
         user_message: str,
         current_data: PartialShipmentData,
+        conversation_history: list[ChatTurn] | None = None,
     ) -> PartialShipmentData:
-        """Extract shipment fields from the latest user message."""
+        """Extract shipment fields using latest message plus collection context."""
         if not user_message.strip():
             raise ExtractionError("Please provide a message describing your shipment.")
 
-        user_content = (
-            "Current partial shipment data:\n"
-            f"{json.dumps(current_data.model_dump(mode='json'), indent=2)}\n\n"
-            "Latest user message:\n"
-            f"{user_message}"
+        user_content = build_extraction_user_content(
+            user_message=user_message,
+            current_data=current_data,
+            conversation_history=conversation_history,
         )
 
         try:

@@ -325,10 +325,10 @@ def test_routing_reply_not_ok_raises_remote_routing_error():
     )
     client = UAgentsRoutingClient(ctx, "agent1qrouter")
 
-    with pytest.raises(RemoteRoutingError, match="could not process") as exc_info:
+    with pytest.raises(RemoteRoutingError, match="internal routing failure details") as exc_info:
         _run(client.route(shipment, econ))
 
-    assert "internal routing failure details" not in str(exc_info.value)
+    assert exc_info.value.remote_error == "internal routing failure details"
 
 
 def test_routing_none_response_raises_remote_routing_error():

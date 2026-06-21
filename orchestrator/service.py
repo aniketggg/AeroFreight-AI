@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from shared_models import EconData, RouteData, SettlementStatus
 
-from orchestrator.models import OrchestratorSession, PartialShipmentData, WorkflowStage
+from orchestrator.models import (
+    ChatTurn,
+    OrchestratorSession,
+    PartialShipmentData,
+    WorkflowStage,
+)
 from orchestrator.session_store import SessionStore
 from orchestrator.location_normalization import normalize_partial_shipment
 from orchestrator.validation import (
@@ -79,6 +84,25 @@ class OrchestratorService:
             f"{request.timeframe} priority)."
         )
         return session, summary
+
+    def append_collection_turns(
+        self,
+        sender_address: str,
+        *,
+        user_message: str,
+        assistant_message: str,
+    ) -> OrchestratorSession:
+        """Record one user/assistant exchange from the collection phase."""
+        session = self._require_session(sender_address)
+        session.collection_history.append(
+            ChatTurn(role="user", content=user_message.strip())
+        )
+        session.collection_history.append(
+            ChatTurn(role="assistant", content=assistant_message.strip())
+        )
+        session.touch()
+        self._session_store.save(session)
+        return session.model_copy(deep=True)
 
     def begin_economic_analysis(self, sender_address: str) -> OrchestratorSession:
         session = self._require_session(sender_address)

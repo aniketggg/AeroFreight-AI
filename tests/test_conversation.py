@@ -29,9 +29,10 @@ class FakeExtractor:
         self,
         user_message: str,
         current_data: PartialShipmentData,
+        conversation_history=None,
     ) -> PartialShipmentData:
         self.call_count += 1
-        self.calls.append((user_message, current_data))
+        self.calls.append((user_message, current_data, conversation_history or []))
         if self.raise_error:
             raise ExtractionError("Simulated extraction failure.")
         if self.responses:
@@ -94,6 +95,26 @@ def test_multi_message_collection_preserves_prior_information():
     )
     assert session.stage == WorkflowStage.READY_FOR_ECONOMIST
     assert extractor.calls[1][1].origin["city"] == "Shenzhen"
+    assert len(extractor.calls[1][2]) == 2
+    assert extractor.calls[1][2][0].content == "From Shenzhen to Austin"
+
+
+def test_collection_history_grows_after_each_successful_turn():
+    extractor = FakeExtractor(
+        [
+            PartialShipmentData(origin={"country": "CN", "city": "Shenzhen"}),
+            PartialShipmentData(
+                destination={"country": "US", "state": "TX", "city": "Austin"}
+            ),
+        ]
+    )
+    controller = _controller(extractor)
+    controller.process_message("user-1", "From Shenzhen")
+    controller.process_message("user-1", "To Austin TX")
+    store = controller._service._session_store
+    session = store.get("user-1")
+    assert session is not None
+    assert len(session.collection_history) == 4
 
 
 def test_extractor_failure_preserves_partial_data():
@@ -111,6 +132,7 @@ def test_extractor_failure_preserves_partial_data():
     assert "couldn't interpret" in response.lower()
     assert session.partial_data.origin["city"] == "Shenzhen"
     assert session.retry_count == 0
+    assert len(session.collection_history) == 2
 
 
 def test_blank_messages_do_not_call_extractor():

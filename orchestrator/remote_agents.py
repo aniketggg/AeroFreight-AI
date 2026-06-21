@@ -96,6 +96,10 @@ class UAgentsEconomistClient:
 class RemoteRoutingError(RuntimeError):
     """Raised when the remote Router cannot be reached or returns invalid data."""
 
+    def __init__(self, message: str, *, remote_error: str | None = None) -> None:
+        super().__init__(message)
+        self.remote_error = remote_error
+
 
 class UAgentsRoutingClient:
     """Call Riya's Router uAgent via Context.send_and_receive."""
@@ -156,7 +160,8 @@ class UAgentsRoutingClient:
 
         if not reply.ok:
             raise RemoteRoutingError(
-                "The Router agent could not process the shipment request."
+                reply.error or "The Router agent could not process the shipment request.",
+                remote_error=reply.error,
             )
 
         try:

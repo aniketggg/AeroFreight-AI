@@ -15,8 +15,9 @@ from orchestrator.extractor import (
     ExtractionLocation,
     ExtractionPayload,
     ExtractorConfigurationError,
+    build_extraction_user_content,
 )
-from orchestrator.models import PartialItem, PartialShipmentData
+from orchestrator.models import ChatTurn, PartialItem, PartialShipmentData
 
 
 def _parse_response(payload: ExtractionPayload | None) -> SimpleNamespace:
@@ -111,6 +112,38 @@ def test_request_includes_current_partial_data():
     assert "Current partial shipment data:" in user_content
     assert "Guangdong" in user_content
     assert "Shenzhen" in user_content
+
+
+def test_request_includes_previous_conversation_history():
+    client = MagicMock()
+    client.messages.parse.return_value = _parse_response(ExtractionPayload())
+    history = [
+        ChatTurn(role="user", content="Ship 2 items from Shenzhen to Austin"),
+        ChatTurn(
+            role="assistant",
+            content="Please provide the item names, weight, and declared value.",
+        ),
+    ]
+    extractor = ClaudeShipmentExtractor(client=client, model="test-model")
+    extractor.extract(
+        "Item 1 is widgets, 50kg total",
+        PartialShipmentData(),
+        conversation_history=history,
+    )
+    user_content = client.messages.parse.call_args.kwargs["messages"][0]["content"]
+    assert "Previous conversation during shipment collection:" in user_content
+    assert "Ship 2 items from Shenzhen to Austin" in user_content
+    assert "Item 1 is widgets, 50kg total" in user_content
+
+
+def test_build_extraction_user_content_omits_history_when_empty():
+    content = build_extraction_user_content(
+        user_message="hello",
+        current_data=PartialShipmentData(),
+        conversation_history=[],
+    )
+    assert "Previous conversation during shipment collection:" not in content
+    assert "Latest user message:" in content
 
 
 def test_request_uses_extraction_payload_output_format():

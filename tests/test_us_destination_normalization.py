@@ -216,7 +216,7 @@ class FakeExtractor:
     def __init__(self, responses: list[PartialShipmentData]) -> None:
         self.responses = list(responses)
 
-    def extract(self, user_message: str, current_data: PartialShipmentData):
+    def extract(self, user_message: str, current_data: PartialShipmentData, conversation_history=None):
         if self.responses:
             return self.responses.pop(0)
         return PartialShipmentData()

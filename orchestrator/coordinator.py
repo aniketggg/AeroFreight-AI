@@ -35,6 +35,16 @@ async def _await_if_needed(value: Any) -> Any:
     return value
 
 
+def _report_routing_error(exc: Exception) -> None:
+    """Print routing failure details to the terminal for debugging."""
+    print(f"ROUTING_ERROR: {exc}")
+    if exc.__cause__ is not None:
+        print(f"ROUTING_ERROR cause: {exc.__cause__}")
+    remote_error = getattr(exc, "remote_error", None)
+    if remote_error:
+        print(f"ROUTING_ERROR remote_payload: {remote_error}")
+
+
 class WorkflowCoordinator:
     """Run mock teammate workflows after collection and confirmation."""
 
@@ -120,7 +130,8 @@ class WorkflowCoordinator:
         try:
             self.service.record_econ_result(sender_address, econ_result)
             route_result = self._router.route(shipment, econ_result)
-        except Exception:
+        except Exception as e:
+            _report_routing_error(e)
             session = self.service.mark_failed(
                 sender_address,
                 "Routing analysis failed.",
@@ -181,7 +192,8 @@ class WorkflowCoordinator:
             route_result = await _await_if_needed(
                 self._router.route(shipment, econ_result)
             )
-        except Exception:
+        except Exception as e:
+            _report_routing_error(e)
             session = self.service.mark_failed(
                 sender_address,
                 "Routing analysis failed.",
@@ -241,7 +253,8 @@ class WorkflowCoordinator:
             route_result = await _await_if_needed(
                 self._router.route(shipment, econ_result)
             )
-        except Exception:
+        except Exception as e:
+            _report_routing_error(e)
             session = self.service.mark_failed(
                 sender_address,
                 "Routing analysis failed.",

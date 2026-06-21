@@ -36,6 +36,15 @@ class PartialItem(BaseModel):
     category: str | None = None
 
 
+class ChatTurn(BaseModel):
+    """One user or assistant message during shipment field collection."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["user", "assistant"]
+    content: str
+
+
 class PartialShipmentData(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -57,6 +66,7 @@ class OrchestratorSession(BaseModel):
     sender_address: str
     stage: WorkflowStage = WorkflowStage.COLLECTING_INPUT
     partial_data: PartialShipmentData = Field(default_factory=PartialShipmentData)
+    collection_history: list[ChatTurn] = Field(default_factory=list)
     shipment_request: ShipmentRequest | None = None
     econ_data: EconData | None = None
     route_data: RouteData | None = None

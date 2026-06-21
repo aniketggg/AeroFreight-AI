@@ -99,6 +99,7 @@ class ConversationController:
             extracted = self._extractor.extract(
                 user_message=user_message,
                 current_data=session.partial_data,
+                conversation_history=session.collection_history,
             )
         except ExtractionError:
             current = self._service.get_or_create_session(sender_address)
@@ -107,4 +108,13 @@ class ConversationController:
                 "Please try again with your shipment details."
             )
 
-        return self._service.apply_extracted_data(sender_address, extracted)
+        session, response = self._service.apply_extracted_data(
+            sender_address,
+            extracted,
+        )
+        session = self._service.append_collection_turns(
+            sender_address,
+            user_message=user_message,
+            assistant_message=response,
+        )
+        return session, response

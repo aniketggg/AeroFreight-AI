@@ -73,6 +73,7 @@ class FakeExtractor:
         self,
         user_message: str,
         current_data: PartialShipmentData,
+        conversation_history=None,
     ) -> PartialShipmentData:
         self.calls.append((user_message, current_data))
         if self.fail:

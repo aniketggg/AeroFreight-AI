@@ -68,7 +68,7 @@ class FakeContext:
 
 
 class FakeExtractor:
-    def extract(self, user_message: str, current_data: PartialShipmentData):
+    def extract(self, user_message: str, current_data: PartialShipmentData, conversation_history=None):
         return PartialShipmentData(
             origin={"country": "CN", "state": "Guangdong", "city": "Shenzhen"},
             destination={"country": "US", "state": "TX", "city": "Austin"},
