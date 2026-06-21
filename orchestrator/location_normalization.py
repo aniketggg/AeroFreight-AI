@@ -73,6 +73,15 @@ _US_STATE_NAMES: dict[str, str] = {
 
 _US_STATE_CODES = frozenset(_US_STATE_NAMES.values())
 
+_CITY_SCRUB_MARKERS = (
+    "issuer",
+    "state is",
+    "','state",
+    "'state",
+    "state:",
+    " it should be",
+)
+
 _CANADIAN_PROVINCES = frozenset(
     {
         "AB",
@@ -117,6 +126,26 @@ def _normalize_key(value: object) -> str:
     text = str(value or "").strip()
     text = re.sub(r"[.\s]+", " ", text)
     return " ".join(text.upper().split())
+
+
+def scrub_city_name(value: object | None) -> str | None:
+    """Strip LLM commentary and combined state text from a city field."""
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    lowered = text.casefold()
+    cut_at = len(text)
+    for marker in _CITY_SCRUB_MARKERS:
+        idx = lowered.find(marker)
+        if idx > 0:
+            cut_at = min(cut_at, idx)
+
+    text = text[:cut_at].split(",")[0].strip().strip("'\"")
+    return text or None
 
 
 def canonicalize_country(value: object | None) -> str | None:
@@ -170,6 +199,10 @@ def normalize_location(location: dict | None) -> dict | None:
         return None
 
     normalized = dict(location)
+
+    if "city" in normalized:
+        normalized["city"] = scrub_city_name(normalized.get("city"))
+
     explicit_country = normalized.get("country")
 
     if not _is_blank(explicit_country):

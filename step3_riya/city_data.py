@@ -211,6 +211,11 @@ def find_city(location: dict[str, Any]) -> City:
 
         if state_matches:
             candidates = state_matches
+        elif country != "US":
+            # International admin1 values are GeoNames codes (e.g. "08"), not
+            # human-readable province names (e.g. "Ontario"). Fall back to the
+            # largest city in the country when the state name does not match.
+            pass
 
     return max(
         candidates,

@@ -103,6 +103,22 @@ def test_unknown_city_raises_unsupported_location_error():
         )
 
 
+@pytest.mark.parametrize(
+    "location",
+    [
+        {"country": "Canada", "state": "Ontario", "city": "Toronto"},
+        {"country": "CA", "state": "ON", "city": "Toronto"},
+        {"country": "India", "state": "Maharashtra", "city": "Mumbai"},
+        {"country": "IN", "state": "MH", "city": "Mumbai"},
+    ],
+)
+def test_international_state_name_falls_back_to_largest_city(location: dict):
+    coordinates = resolve_coordinates(location)
+
+    assert isinstance(coordinates, tuple)
+    assert len(coordinates) == 2
+
+
 def test_build_air_quote_shenzhen_china_to_austin_united_states():
     request = _routing_request(
         _shenzhen_austin_shipment(

@@ -9,13 +9,14 @@ from typing import Literal, Protocol
 import anthropic
 from anthropic import Anthropic, AuthenticationError, RateLimitError
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
+from orchestrator.location_normalization import scrub_city_name
 from orchestrator.models import PartialItem, PartialShipmentData, ChatTurn
 
 load_dotenv()
 
-DEFAULT_MODEL = "claude-sonnet-4-6"
+DEFAULT_MODEL = "claude-opus-4-6"
 
 SYSTEM_INSTRUCTIONS = """You extract shipment information for a freight forwarding orchestrator.
 
@@ -31,6 +32,8 @@ Rules:
 - Normalize obvious country codes to uppercase.
 - For U.S. destinations, prefer country "United States" with city and state/region fields, for example Austin + Texas + United States.
 - When the user gives a U.S. city and state without a country, still extract the city and state; do not invent a non-U.S. country.
+- Never combine city and state into a single field. The city field must contain ONLY the name of the city (e.g., "Mumbai"). The state field must contain ONLY the state/province name. Do not write internal thoughts or sentences into the JSON.
+- When updating existing partial shipment data across multiple conversation turns, apply the same location rules strictly. Fill in missing or corrected fields only. Never embed explanations, corrections, or reasoning inside JSON string values (for example, never city "Mumbai, state is Maharashtra").
 - You may infer a broad item category only when clearly implied by the item.
 - Do not default an unknown quantity to 1.
 - Do not interpret CONFIRM or NEW SHIPMENT as shipment information.
@@ -53,6 +56,11 @@ class ExtractionLocation(BaseModel):
     city: str | None = None
 
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator("city", mode="before")
+    @classmethod
+    def _scrub_city(cls, value: object) -> str | None:
+        return scrub_city_name(value)
 
 
 class ExtractionPayload(BaseModel):
@@ -77,6 +85,23 @@ class ShipmentExtractor(Protocol):
         ...
 
 
+INCREMENTAL_EXTRACTION_REMINDER = """\
+Incremental update rules (strict):
+- Merge the latest user message into the current partial shipment data.
+- Never combine city and state. The city field must contain ONLY the name of the city.
+- The state field must contain ONLY the state/province name.
+- Do not write internal thoughts, explanations, or sentences into JSON values."""
+
+
+def _is_incremental_extraction(
+    current_data: PartialShipmentData,
+    conversation_history: list[ChatTurn] | None,
+) -> bool:
+    if conversation_history:
+        return True
+    return bool(current_data.model_dump(exclude_none=True))
+
+
 def build_extraction_user_content(
     *,
     user_message: str,
@@ -94,6 +119,8 @@ def build_extraction_user_content(
         for turn in history:
             speaker = "User" if turn.role == "user" else "Assistant"
             parts.append(f"{speaker}: {turn.content}")
+    if _is_incremental_extraction(current_data, history):
+        parts.append(f"\n{INCREMENTAL_EXTRACTION_REMINDER}")
     parts.extend(["\nLatest user message:", user_message])
     return "\n".join(parts)
 
