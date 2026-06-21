@@ -18,9 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 # Exact shared schemas supplied in the original workflow.
 from schemas import EconData, RouteData, ShipmentRequest
 
-from air_agent import air_agent
 from quote_models import QuoteRequest, QuoteResponse
-from ship_agent import ship_agent
 
 
 # ---------------------------------------------------------------------------
@@ -29,10 +27,20 @@ from ship_agent import ship_agent
 
 load_dotenv(Path(__file__).with_name(".env"))
 
-RIYA_AGENT_SEED = os.getenv("RIYA_AGENT_SEED")
+def require_env(name: str) -> str:
+    value = os.getenv(name)
 
-if not RIYA_AGENT_SEED:
-    raise RuntimeError("RIYA_AGENT_SEED is missing from step3_riya/.env")
+    if not value:
+        raise RuntimeError(
+            f"{name} is missing from step3_riya/.env"
+        )
+
+    return value
+
+
+RIYA_AGENT_SEED = require_env("RIYA_AGENT_SEED")
+AIR_AGENT_ADDRESS = require_env("AIR_AGENT_ADDRESS")
+SHIP_AGENT_ADDRESS = require_env("SHIP_AGENT_ADDRESS")
 
 
 riya_agent = Agent(
@@ -236,7 +244,7 @@ async def handle_routing_request(
         if econ.transport_preference == "AIR":
             air_quote = await request_transport_quote(
                 ctx,
-                str(air_agent.address),
+                AIR_AGENT_ADDRESS,
                 quote_request,
                 "AIR",
             )
@@ -245,7 +253,7 @@ async def handle_routing_request(
         elif econ.transport_preference == "SHIP":
             ship_quote = await request_transport_quote(
                 ctx,
-                str(ship_agent.address),
+                SHIP_AGENT_ADDRESS,
                 quote_request,
                 "SHIP",
             )
@@ -255,14 +263,14 @@ async def handle_routing_request(
             # Contact both real Fetch.ai transport agents.
             air_quote = await request_transport_quote(
                 ctx,
-                str(air_agent.address),
+                AIR_AGENT_ADDRESS,
                 quote_request,
                 "AIR",
             )
 
             ship_quote = await request_transport_quote(
                 ctx,
-                str(ship_agent.address),
+                SHIP_AGENT_ADDRESS,
                 quote_request,
                 "SHIP",
             )
@@ -332,8 +340,8 @@ riya_agent.include(routing_protocol)
 @riya_agent.on_event("startup")
 async def startup(ctx: Context) -> None:
     ctx.logger.info(f"Riya agent address: {riya_agent.address}")
-    ctx.logger.info(f"AIR sub-agent address: {air_agent.address}")
-    ctx.logger.info(f"SHIP sub-agent address: {ship_agent.address}")
+    ctx.logger.info(f"AIR sub-agent address: {AIR_AGENT_ADDRESS}")
+    ctx.logger.info(f"SHIP sub-agent address: {SHIP_AGENT_ADDRESS}")
 
 
 if __name__ == "__main__":
