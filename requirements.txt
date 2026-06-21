@@ -1,5 +1,5 @@
 anthropic
-pydantic
+pydantic>=2,<3
 python-dotenv
-pytest
-uagents
+pytest>=8,<9
+uagents==0.25.2
