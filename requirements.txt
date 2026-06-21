@@ -1,0 +1,4 @@
+uagents>=0.25.0
+uagents-core>=0.4.0
+stripe>=10.0.0
+python-dotenv>=1.0.0
