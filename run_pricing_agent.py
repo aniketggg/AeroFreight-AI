@@ -5,7 +5,7 @@ Run the AeroFreight Settlement & Payment agent.
 Usage (from this directory's parent):
     python3 -m aerofreight_settlement.run_agent
 Or simply:
-    python3 run_agent.py
+    python3 run_pricing_agent.py
 """
 
 import sys

@@ -5,7 +5,7 @@ This is the SAME logic as models.py + pricing.py + payment_backend.py +
 payment_proto.py + settlement_agent.py, flattened into one file because the
 Agentverse Hosted Agent editor runs a single script. If you're running
 locally or with a local Mailbox instead, use the modular version
-(run_agent.py) -- it's easier to read and edit.
+(run_pricing_agent.py) -- it's easier to read and edit.
 
 Deploy steps (Agentverse Hosted Agent):
   1. Agentverse -> Agents -> + Launch an Agent -> Blank Agent.
@@ -328,18 +328,24 @@ async def _send_chat(ctx: Context, to: str, text: str) -> None:
 
 
 def _render_doc_package(docs: DocTemplates, route: RouteData, econ: EconData) -> str:
-    lines = ["**Completed document package**", ""]
+    lines = ["**Final route cost breakdown**", ""]
+    lines.append(f"- Selected mode: **{route.selected_mode}**")
+    lines.append(f"- Countries visited: {', '.join(route.countries_visited)}")
+    lines.append(f"- Freight cost: **${route.freight_cost_usd:,.2f}**")
+    lines.append(f"- Tolls / tariffs: **${route.tolls_tariffs_usd:,.2f}**")
+    lines.append(f"- Inland trucking: **${route.inland_cost_usd:,.2f}**")
+    lines.append(f"- **Total route cost: ${route.total_cost_usd:,.2f}**")
+    lines.append(
+        f"- Estimated entry tax (remit via your customs broker, not paid by this agent): "
+        f"**${econ.entry_tax_usd:,.2f}**"
+    )
+    lines.append("")
+    lines.append("**Completed document package**")
+    lines.append("")
     for name in docs.doc_names:
         body = docs.doc_bodies.get(name, "(template)")
         lines.append(f"### {name}")
         lines.append(f"```\n{body}\n```")
-    lines.append("")
-    lines.append(f"Selected mode: **{route.selected_mode}**")
-    lines.append(f"Countries visited: {', '.join(route.countries_visited)}")
-    lines.append(
-        f"Estimated entry tax (remit via your customs broker, not paid by this agent): "
-        f"**${econ.entry_tax_usd:,.2f}**"
-    )
     return "\n".join(lines)
 
 

@@ -1,28 +1,25 @@
 """
-AeroFreight AI -- Neel's Settlement & Payment Agent.
+AeroFreight AI -- Neel's Settlement & Payment Agent (standalone).
 
 Responsibilities
 ----------------
-1. Receive a SettlementRequest from the Orchestrator once the user has typed
-   CONFIRM and the rest of the pipeline (Ashwin -> Riya -> Aniket) has finished.
+1. Receive a SettlementRequest (e.g. from an Orchestrator, or trigger it
+   yourself via the DEMO command in chat) once a route has been confirmed.
 2. Compute a dynamic, value-anchored service fee (pricing.py) for the route
    optimization + compliance document package -- never a flat constant, and
    never framed as holding the shipment's value or paying its taxes.
 3. Create a Stripe embedded Checkout session for that fee (payment_backend.py)
-   and send the user a RequestPayment message plus a ChatMessage summary,
-   inside the same ASI:One conversation -- no custom frontend required.
+   and send the user a RequestPayment message, inside the same ASI:One
+   conversation -- no custom frontend required.
 4. On confirmation of payment, verify directly with Stripe (never trust the
    client's claim), then either:
-     - send CompletePayment and release the finished document package, or
+     - send CompletePayment and release the finished document package
+       (including the full route cost breakdown), or
      - send RejectPayment with a clear reason and leave the request open so
        the user can retry.
 
 Run locally / with a Mailbox:
-    python run_agent.py
-
-For pasting into the Agentverse Hosted Agent editor, use
-settlement_agent_hosted.py instead (single-file build of this same logic).
-See README.md for full setup, API keys, and both deployment paths.
+    python run_pricing_agent.py
 """
 
 from __future__ import annotations
@@ -30,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import tempfile
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -68,32 +66,32 @@ from payment_backend import (
 )
 from payment_proto import build_payment_protocol
 from pricing import compute_service_fee
+from invoice import generate_invoice_pdf
+from drive_upload import upload_invoice_and_get_link
 
 AGENT_NAME = os.getenv("AGENT_NAME", "aerofreight-settlement-agent")
 AGENT_SEED = os.getenv("AGENT_SEED_PHRASE", "aerofreight-settlement-agent-seed")
 AGENT_PORT = int(os.getenv("AGENT_PORT", "8003"))
-# Optional: if set, Neel reports paid/rejected settlements back to the Orchestrator.
 ORCHESTRATOR_ADDRESS = os.getenv("ORCHESTRATOR_AGENT_ADDRESS", "").strip()
 
 agent = Agent(
     name=AGENT_NAME,
     seed=AGENT_SEED,
     port=AGENT_PORT,
-    mailbox=True,  # lets this agent register with Agentverse and stay reachable
+    mailbox=True,
     network="testnet",
 )
 
 chat_proto = Protocol(spec=chat_protocol_spec)
 
 STORAGE_PREFIX = "pending_settlement:"
-# ASI:One's embedded Stripe checkout widget sends a special chat-text trigger
-# of this shape when the user finishes checkout, in addition to (or instead
-# of) a formal CommitPayment message. We handle both for reliability.
 _CHECKOUT_CONFIRM_RE = re.compile(r"<stripe:payment_id:([^:>]+):CONFIRM>")
 _MENTION_RE = re.compile(r"^@agent1[a-z0-9]+\s*", re.IGNORECASE)
 
+
 def _strip_agent_mention(text: str) -> str:
     return _MENTION_RE.sub("", text).strip()
+
 
 def _pending_key(checkout_session_id: str) -> str:
     return f"{STORAGE_PREFIX}{checkout_session_id}"
@@ -114,24 +112,8 @@ async def _send_chat(ctx: Context, to: str, text: str) -> None:
     )
 
 
-def _render_doc_package(docs: DocTemplates, route: RouteData, econ: EconData) -> str:
-    lines = ["**Completed document package**", ""]
-    for name in docs.doc_names:
-        body = docs.doc_bodies.get(name, "(template)")
-        lines.append(f"### {name}")
-        lines.append(f"```\n{body}\n```")
-    lines.append("")
-    lines.append(f"Selected mode: **{route.selected_mode}**")
-    lines.append(f"Countries visited: {', '.join(route.countries_visited)}")
-    lines.append(
-        f"Estimated entry tax (remit via your customs broker, not paid by this agent): "
-        f"**${econ.entry_tax_usd:,.2f}**"
-    )
-    return "\n".join(lines)
-
-
 # ---------------------------------------------------------------------------
-# Step 1: Orchestrator -> Neel, once the user has typed CONFIRM
+# Step 1: trigger -> compute fee, open Stripe checkout, request payment
 # ---------------------------------------------------------------------------
 
 
@@ -168,9 +150,7 @@ async def _start_settlement(
         if ORCHESTRATOR_ADDRESS:
             await ctx.send(
                 ORCHESTRATOR_ADDRESS,
-                SettlementStatus(
-                    session_id=session_id, status="unconfigured", fee_usd=0.0
-                ),
+                SettlementStatus(session_id=session_id, status="unconfigured", fee_usd=0.0),
             )
         return
 
@@ -192,28 +172,19 @@ async def _start_settlement(
 
     checkout_session_id = checkout["checkout_session_id"]
 
-    # ctx.storage persists across calls for Hosted Agents (plain globals do not),
-    # and works the same way for local/Mailbox agents.
     ctx.storage.set(
         _pending_key(checkout_session_id),
         {
             "user_address": user_address,
             "session_id": session_id,
             "fee_usd": fee.total_fee_usd,
-            "doc_package_markdown": _render_doc_package(docs, route, econ),
+            "shipment": shipment.model_dump(),
+            "econ": econ.model_dump(),
+            "route": route.model_dump(),
+            "docs": docs.model_dump(),
         },
     )
     ctx.storage.set(_pending_by_sender_key(user_address), checkout_session_id)
-
-    summary = (
-        f"**Route confirmed: {route.selected_mode}** via {', '.join(route.countries_visited)}\n\n"
-        f"{fee.as_markdown()}\n\n"
-        "Complete the checkout above to receive your finished route summary and compliance "
-        "document package. This fee covers the optimization and document automation service "
-        "-- it does not include or hold your shipment's value, and it does not pay your "
-        "entry tax on your behalf."
-    )
-    await _send_chat(ctx, user_address, summary)
 
     await ctx.send(
         user_address,
@@ -240,33 +211,69 @@ async def _finalize_checkout(
 ) -> None:
     pending = ctx.storage.get(_pending_key(checkout_session_id))
     if not pending:
-        await ctx.send(
-            sender,
-            RejectPayment(
-                reason="No matching payment request found (expired or already settled)."
-            ),
-        )
+        reason = "No matching payment request found (expired or already settled)."
+        await ctx.send(sender, RejectPayment(reason=reason))
+        await _send_chat(ctx, sender, reason)
         return
 
     paid = await asyncio.to_thread(verify_checkout_paid, checkout_session_id)
     if not paid:
-        await ctx.send(
-            sender,
-            RejectPayment(
-                reason="Stripe payment not completed yet. Please finish checkout and resend confirmation."
-            ),
-        )
+        reason = "Stripe payment not completed yet. Please finish checkout and resend confirmation."
+        await ctx.send(sender, RejectPayment(reason=reason))
+        await _send_chat(ctx, sender, reason)
         return
 
     await ctx.send(sender, CompletePayment(transaction_id=transaction_id))
     ctx.storage.remove(_pending_key(checkout_session_id))
 
-    await _send_chat(
-        ctx,
-        pending["user_address"],
-        f"Payment received (${pending['fee_usd']:.2f}). Here is your completed package:\n\n"
-        f"{pending['doc_package_markdown']}",
-    )
+    user_address = pending["user_address"]
+    shipment = ShipmentRequest(**pending["shipment"])
+    econ = EconData(**pending["econ"])
+    route = RouteData(**pending["route"])
+    docs = DocTemplates(**pending["docs"])
+    fee = compute_service_fee(econ, route)
+
+    invoice_link = None
+    try:
+        invoice_path = os.path.join(
+            tempfile.gettempdir(), f"aerofreight_invoice_{checkout_session_id}.pdf"
+        )
+        await asyncio.to_thread(
+            generate_invoice_pdf,
+            output_path=invoice_path,
+            session_id=pending["session_id"],
+            transaction_id=transaction_id,
+            shipment=shipment,
+            econ=econ,
+            route=route,
+            docs=docs,
+            fee=fee,
+        )
+        invoice_link = await asyncio.to_thread(
+            upload_invoice_and_get_link,
+            invoice_path,
+            f"AeroFreight_Invoice_{checkout_session_id}.pdf",
+        )
+    except Exception:
+        import traceback
+
+        traceback.print_exc()
+
+    if invoice_link:
+        message = (
+            f"Payment received (${pending['fee_usd']:.2f}). Your invoice and document "
+            f"package are ready:\n\n{invoice_link}"
+        )
+    else:
+        # Fallback so a Drive/PDF problem never blocks delivery of the result.
+        message = (
+            f"Payment received (${pending['fee_usd']:.2f}). Total route cost: "
+            f"${route.total_cost_usd:,.2f} ({route.selected_mode} via "
+            f"{', '.join(route.countries_visited)}). The PDF invoice link is "
+            f"temporarily unavailable -- check the agent's logs."
+        )
+
+    await _send_chat(ctx, user_address, message)
 
     if ORCHESTRATOR_ADDRESS:
         await ctx.send(
@@ -284,23 +291,31 @@ async def on_payment_commit(ctx: Context, sender: str, msg: CommitPayment):
     if getattr(msg.funds, "payment_method", None) != "stripe" or not getattr(
         msg, "transaction_id", None
     ):
-        await ctx.send(
-            sender, RejectPayment(reason="Unsupported payment method (expected stripe).")
-        )
+        reason = "Unsupported payment method (expected stripe)."
+        await ctx.send(sender, RejectPayment(reason=reason))
+        await _send_chat(ctx, sender, reason)
         return
     checkout_id = await asyncio.to_thread(resolve_checkout_session_id, msg.transaction_id)
     await _finalize_checkout(ctx, sender, checkout_id, msg.transaction_id)
 
 
 async def on_payment_reject(ctx: Context, sender: str, msg: RejectPayment):
-    # Nothing to clean up: pending state is only removed on a verified success,
-    # so the user can always retry the same checkout.
+    # The human declined/cancelled checkout. Don't clear the pending entry --
+    # the Stripe Checkout Session may still be open, so if they come back and
+    # actually pay later, the same checkout_session_id still resolves
+    # correctly through _finalize_checkout.
     ctx.logger.info("Payment rejected by %s: %s", sender, msg.reason)
+    await _send_chat(
+        ctx,
+        sender,
+        "No worries -- checkout cancelled. The same payment link stays open if you "
+        "change your mind, or send DEMO again to start a new one.",
+    )
 
 
 # ---------------------------------------------------------------------------
-# Chat handling: ack incoming messages, catch ASI:One's checkout-confirm text
-# trigger, and offer a standalone DEMO path for testing this agent on its own.
+# Chat handling: ack, catch ASI:One's checkout-confirm text trigger, and
+# offer a standalone DEMO path so this agent is fully testable on its own.
 # ---------------------------------------------------------------------------
 
 _DEMO_SHIPMENT = ShipmentRequest(
@@ -347,12 +362,6 @@ async def on_chat_message(ctx: Context, sender: str, msg: ChatMessage):
 
     confirm_match = _CHECKOUT_CONFIRM_RE.search(text)
     if confirm_match:
-        # ASI:One's embedded checkout widget sent its text confirmation trigger
-        # rather than (or in addition to) a formal CommitPayment message. The
-        # id inside the trigger isn't guaranteed to be our checkout session id,
-        # so resolve the most recent pending checkout we opened for this sender
-        # and verify that directly with Stripe -- same verification path as
-        # the formal CommitPayment branch, just a different entry point.
         checkout_session_id = ctx.storage.get(_pending_by_sender_key(sender))
         if checkout_session_id:
             await _finalize_checkout(
@@ -360,7 +369,7 @@ async def on_chat_message(ctx: Context, sender: str, msg: ChatMessage):
             )
         return
 
-    if text.strip().upper() == "DEMO":
+    if text.upper() == "DEMO":
         await _start_settlement(
             ctx,
             user_address=sender,
@@ -375,9 +384,8 @@ async def on_chat_message(ctx: Context, sender: str, msg: ChatMessage):
     await _send_chat(
         ctx,
         sender,
-        "I'm the AeroFreight Settlement & Payment agent. I'm normally invoked by the "
-        "Orchestrator once a route is confirmed. Send 'DEMO' to see a sample settlement "
-        "and payment flow on a test shipment.",
+        "I'm the AeroFreight Settlement & Payment agent. Send 'DEMO' to see a sample "
+        "settlement and payment flow on a test shipment.",
     )
 
 
