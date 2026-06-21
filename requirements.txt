@@ -1,0 +1,11 @@
+# AeroFreight AI — Python 3.12 (uAgents framework with Pydantic).
+# 3.11 also works; 3.13/3.14 can break uagents' event-loop init.
+# Recommended: `python3.12 -m venv .venv && pip install -r requirements.txt`
+uagents==0.25.2
+pydantic>=2,<3          # uagents ships pydantic v2; pinned for the logic + tests
+# --- needed by the other agents in the swarm (orchestrator / Riya / Aniket / Neel) ---
+cosmpy>=0.11,<0.13       # Fetch.ai escrow settlement (also shipped with uagents)
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.49,<1.0
+httpx>=0.28,<1.0
+requests>=2.32
