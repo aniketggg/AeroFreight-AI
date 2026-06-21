@@ -28,7 +28,7 @@ User message (CLI, Agent Chat Protocol, or browser UI via server.py)
 * **Runtime:** Python 3.11+
 * **Agent Framework:** `uagents` (Fetch.ai)
 * **Data Validation:** `Pydantic` (strict inter-agent contracts in [shared_models.py](shared_models.py))
-* **LLM:** Anthropic Claude (`anthropic` SDK, default model `claude-sonnet-4-6`)
+* **LLM:** Anthropic Claude (`anthropic` SDK, default model `claude-opus-4-8`)
 * **Web/API:** `FastAPI` + `uvicorn` ([server.py](server.py)) serving a static browser demo ([index.html](index.html))
 * **Payments:** Stripe (embedded checkout via `treasury_agent/payment_backend.py`)
 * **Invoicing:** `reportlab` (PDF generation), with optional Google Drive upload for invoice links
