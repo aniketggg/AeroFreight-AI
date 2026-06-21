@@ -18,6 +18,9 @@ ROUTING_ENV_VARS = (
     "SHIP_AGENT_ADDRESS",
     "AIR_AGENT_SEED",
     "SHIP_AGENT_SEED",
+    "AIR_AGENT_PORT",
+    "SHIP_AGENT_PORT",
+    "RIYA_AGENT_PORT",
 )
 
 
@@ -102,6 +105,7 @@ def test_create_routing_agent_requires_configuration(
 ):
     _clear_routing_env(monkeypatch)
     _reload_step3_modules()
+    monkeypatch.setattr("step3_riya.agent.load_dotenv", lambda *args, **kwargs: False)
 
     from step3_riya.agent import RoutingConfigurationError, create_routing_agent
 
@@ -114,6 +118,7 @@ def test_create_air_agent_requires_configuration(
 ):
     _clear_routing_env(monkeypatch)
     _reload_step3_modules()
+    monkeypatch.setattr("step3_riya.air_agent.load_dotenv", lambda *args, **kwargs: False)
 
     from step3_riya.air_agent import AirAgentConfigurationError, create_air_agent
 
@@ -126,6 +131,7 @@ def test_create_ship_agent_requires_configuration(
 ):
     _clear_routing_env(monkeypatch)
     _reload_step3_modules()
+    monkeypatch.setattr("step3_riya.ship_agent.load_dotenv", lambda *args, **kwargs: False)
 
     from step3_riya.ship_agent import ShipAgentConfigurationError, create_ship_agent
 
@@ -233,32 +239,42 @@ def _ensure_event_loop() -> None:
         asyncio.set_event_loop(asyncio.new_event_loop())
 
 
-def test_air_agent_factory_uses_mailbox_mode():
+def test_air_agent_factory_uses_mailbox_mode(monkeypatch: pytest.MonkeyPatch):
     _ensure_event_loop()
+    _clear_routing_env(monkeypatch)
+    monkeypatch.setattr("step3_riya.air_agent.load_dotenv", lambda *args, **kwargs: False)
     from step3_riya.air_agent import air_quote_protocol, create_air_agent
 
     agent = create_air_agent(seed=TEST_AIR_SEED)
 
     assert agent.name == "aerofreight-air-subagent"
     assert agent._use_mailbox is True
+    assert agent._enable_agent_inspector is True
+    assert agent._port == 8011
     assert agent.mailbox_client is not None
     assert air_quote_protocol.digest in agent.protocols
 
 
-def test_ship_agent_factory_uses_mailbox_mode():
+def test_ship_agent_factory_uses_mailbox_mode(monkeypatch: pytest.MonkeyPatch):
     _ensure_event_loop()
+    _clear_routing_env(monkeypatch)
+    monkeypatch.setattr("step3_riya.ship_agent.load_dotenv", lambda *args, **kwargs: False)
     from step3_riya.ship_agent import create_ship_agent, ship_quote_protocol
 
     agent = create_ship_agent(seed=TEST_SHIP_SEED)
 
     assert agent.name == "aerofreight-ship-subagent"
     assert agent._use_mailbox is True
+    assert agent._enable_agent_inspector is True
+    assert agent._port == 8012
     assert agent.mailbox_client is not None
     assert ship_quote_protocol.digest in agent.protocols
 
 
-def test_routing_agent_factory_uses_mailbox_mode():
+def test_routing_agent_factory_uses_mailbox_mode(monkeypatch: pytest.MonkeyPatch):
     _ensure_event_loop()
+    _clear_routing_env(monkeypatch)
+    monkeypatch.setattr("step3_riya.agent.load_dotenv", lambda *args, **kwargs: False)
     from step3_riya.agent import create_routing_agent, routing_protocol
 
     agent = create_routing_agent(
@@ -269,12 +285,20 @@ def test_routing_agent_factory_uses_mailbox_mode():
 
     assert agent.name == "aerofreight-riya-routing"
     assert agent._use_mailbox is True
+    assert agent._enable_agent_inspector is True
+    assert agent._port == 8013
     assert agent.mailbox_client is not None
     assert routing_protocol.digest in agent.protocols
 
 
-def test_mailbox_agents_do_not_require_explicit_port_configuration():
+def test_mailbox_agents_use_separate_default_inspector_ports(
+    monkeypatch: pytest.MonkeyPatch,
+):
     _ensure_event_loop()
+    _clear_routing_env(monkeypatch)
+    monkeypatch.setattr("step3_riya.air_agent.load_dotenv", lambda *args, **kwargs: False)
+    monkeypatch.setattr("step3_riya.ship_agent.load_dotenv", lambda *args, **kwargs: False)
+    monkeypatch.setattr("step3_riya.agent.load_dotenv", lambda *args, **kwargs: False)
     from uagents_core.config import AgentverseConfig
 
     from step3_riya.agent import create_routing_agent
@@ -291,11 +315,102 @@ def test_mailbox_agents_do_not_require_explicit_port_configuration():
         ship_agent_address=TEST_SHIP_ADDRESS,
     )
 
+    assert air._port == 8011
+    assert ship._port == 8012
+    assert router._port == 8013
+
     for agent in (air, ship, router):
         assert agent._use_mailbox is True
+        assert agent._enable_agent_inspector is True
         assert len(agent._endpoints) == 1
         assert agent._endpoints[0].url == mailbox_url
-        assert "127.0.0.1" not in agent._endpoints[0].url
+
+
+def test_injected_ports_override_defaults():
+    _ensure_event_loop()
+    from step3_riya.agent import create_routing_agent
+    from step3_riya.air_agent import create_air_agent
+    from step3_riya.ship_agent import create_ship_agent
+
+    air = create_air_agent(seed=TEST_AIR_SEED, port=9101)
+    ship = create_ship_agent(seed=TEST_SHIP_SEED, port=9102)
+    router = create_routing_agent(
+        seed=TEST_ROUTER_SEED,
+        air_agent_address=TEST_AIR_ADDRESS,
+        ship_agent_address=TEST_SHIP_ADDRESS,
+        port=9103,
+    )
+
+    assert air._port == 9101
+    assert ship._port == 9102
+    assert router._port == 9103
+
+
+def test_environment_ports_are_respected(monkeypatch: pytest.MonkeyPatch):
+    _ensure_event_loop()
+    _clear_routing_env(monkeypatch)
+    monkeypatch.setattr("step3_riya.air_agent.load_dotenv", lambda *args, **kwargs: False)
+    monkeypatch.setattr("step3_riya.ship_agent.load_dotenv", lambda *args, **kwargs: False)
+    monkeypatch.setattr("step3_riya.agent.load_dotenv", lambda *args, **kwargs: False)
+    monkeypatch.setenv("AIR_AGENT_PORT", "8101")
+    monkeypatch.setenv("SHIP_AGENT_PORT", "8102")
+    monkeypatch.setenv("RIYA_AGENT_PORT", "8103")
+
+    from step3_riya.agent import create_routing_agent
+    from step3_riya.air_agent import create_air_agent
+    from step3_riya.ship_agent import create_ship_agent
+
+    air = create_air_agent(seed=TEST_AIR_SEED)
+    ship = create_ship_agent(seed=TEST_SHIP_SEED)
+    router = create_routing_agent(
+        seed=TEST_ROUTER_SEED,
+        air_agent_address=TEST_AIR_ADDRESS,
+        ship_agent_address=TEST_SHIP_ADDRESS,
+    )
+
+    assert air._port == 8101
+    assert ship._port == 8102
+    assert router._port == 8103
+
+
+def test_invalid_air_port_raises_configuration_error(monkeypatch: pytest.MonkeyPatch):
+    _ensure_event_loop()
+    _clear_routing_env(monkeypatch)
+    monkeypatch.setattr("step3_riya.air_agent.load_dotenv", lambda *args, **kwargs: False)
+    monkeypatch.setenv("AIR_AGENT_PORT", "not-a-port")
+
+    from step3_riya.air_agent import AirAgentConfigurationError, create_air_agent
+
+    with pytest.raises(AirAgentConfigurationError, match="AIR_AGENT_PORT"):
+        create_air_agent(seed=TEST_AIR_SEED)
+
+
+def test_invalid_ship_port_raises_configuration_error(monkeypatch: pytest.MonkeyPatch):
+    _ensure_event_loop()
+    _clear_routing_env(monkeypatch)
+    monkeypatch.setattr("step3_riya.ship_agent.load_dotenv", lambda *args, **kwargs: False)
+    monkeypatch.setenv("SHIP_AGENT_PORT", "not-a-port")
+
+    from step3_riya.ship_agent import ShipAgentConfigurationError, create_ship_agent
+
+    with pytest.raises(ShipAgentConfigurationError, match="SHIP_AGENT_PORT"):
+        create_ship_agent(seed=TEST_SHIP_SEED)
+
+
+def test_invalid_router_port_raises_configuration_error(monkeypatch: pytest.MonkeyPatch):
+    _ensure_event_loop()
+    _clear_routing_env(monkeypatch)
+    monkeypatch.setattr("step3_riya.agent.load_dotenv", lambda *args, **kwargs: False)
+    monkeypatch.setenv("RIYA_AGENT_PORT", "not-a-port")
+
+    from step3_riya.agent import RoutingConfigurationError, create_routing_agent
+
+    with pytest.raises(RoutingConfigurationError, match="RIYA_AGENT_PORT"):
+        create_routing_agent(
+            seed=TEST_ROUTER_SEED,
+            air_agent_address=TEST_AIR_ADDRESS,
+            ship_agent_address=TEST_SHIP_ADDRESS,
+        )
 
 
 def test_same_seed_produces_same_deterministic_address():

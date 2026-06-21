@@ -19,6 +19,9 @@ air_quote_protocol = Protocol(
 )
 
 
+DEFAULT_AIR_PORT = 8011
+
+
 def _require_air_seed() -> str:
     load_dotenv(Path(__file__).with_name(".env"))
     seed = os.getenv("AIR_AGENT_SEED", "").strip()
@@ -28,6 +31,20 @@ def _require_air_seed() -> str:
             "Set it in step3_riya/.env or the environment."
         )
     return seed
+
+
+def _resolve_air_port(port: int | None = None) -> int:
+    if port is not None:
+        return port
+
+    load_dotenv(Path(__file__).with_name(".env"))
+    raw = os.getenv("AIR_AGENT_PORT", str(DEFAULT_AIR_PORT)).strip()
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise AirAgentConfigurationError(
+            f"AIR_AGENT_PORT must be a valid integer, got {raw!r}."
+        ) from exc
 
 
 def _register_air_handlers(agent: Agent) -> None:
@@ -99,11 +116,12 @@ def _register_air_handlers(agent: Agent) -> None:
     agent.include(air_quote_protocol)
 
 
-def create_air_agent(*, seed: str | None = None) -> Agent:
+def create_air_agent(*, seed: str | None = None, port: int | None = None) -> Agent:
     """Create and configure the AIR quote sub-agent."""
     agent = Agent(
         name="aerofreight-air-subagent",
         seed=seed or _require_air_seed(),
+        port=_resolve_air_port(port),
         mailbox=True,
         publish_agent_details=True,
     )

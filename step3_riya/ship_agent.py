@@ -19,6 +19,9 @@ ship_quote_protocol = Protocol(
 )
 
 
+DEFAULT_SHIP_PORT = 8012
+
+
 def _require_ship_seed() -> str:
     load_dotenv(Path(__file__).with_name(".env"))
     seed = os.getenv("SHIP_AGENT_SEED", "").strip()
@@ -28,6 +31,20 @@ def _require_ship_seed() -> str:
             "Set it in step3_riya/.env or the environment."
         )
     return seed
+
+
+def _resolve_ship_port(port: int | None = None) -> int:
+    if port is not None:
+        return port
+
+    load_dotenv(Path(__file__).with_name(".env"))
+    raw = os.getenv("SHIP_AGENT_PORT", str(DEFAULT_SHIP_PORT)).strip()
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ShipAgentConfigurationError(
+            f"SHIP_AGENT_PORT must be a valid integer, got {raw!r}."
+        ) from exc
 
 
 def _register_ship_handlers(agent: Agent) -> None:
@@ -99,11 +116,12 @@ def _register_ship_handlers(agent: Agent) -> None:
     agent.include(ship_quote_protocol)
 
 
-def create_ship_agent(*, seed: str | None = None) -> Agent:
+def create_ship_agent(*, seed: str | None = None, port: int | None = None) -> Agent:
     """Create and configure the SHIP quote sub-agent."""
     agent = Agent(
         name="aerofreight-ship-subagent",
         seed=seed or _require_ship_seed(),
+        port=_resolve_ship_port(port),
         mailbox=True,
         publish_agent_details=True,
     )

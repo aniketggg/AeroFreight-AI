@@ -46,6 +46,9 @@ routing_protocol = Protocol(
 )
 
 
+DEFAULT_ROUTER_PORT = 8013
+
+
 def _require_env(name: str) -> str:
     value = os.getenv(name, "").strip()
     if not value:
@@ -63,6 +66,20 @@ def _load_routing_settings() -> tuple[str, str, str]:
         _require_env("AIR_AGENT_ADDRESS"),
         _require_env("SHIP_AGENT_ADDRESS"),
     )
+
+
+def _resolve_routing_port(port: int | None = None) -> int:
+    if port is not None:
+        return port
+
+    load_dotenv(Path(__file__).with_name(".env"))
+    raw = os.getenv("RIYA_AGENT_PORT", str(DEFAULT_ROUTER_PORT)).strip()
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise RoutingConfigurationError(
+            f"RIYA_AGENT_PORT must be a valid integer, got {raw!r}."
+        ) from exc
 
 
 async def request_transport_quote(
@@ -315,6 +332,7 @@ def create_routing_agent(
     seed: str | None = None,
     air_agent_address: str | None = None,
     ship_agent_address: str | None = None,
+    port: int | None = None,
 ) -> Agent:
     """Create and configure the main routing uAgent."""
     if (
@@ -330,6 +348,7 @@ def create_routing_agent(
     agent = Agent(
         name="aerofreight-riya-routing",
         seed=seed,
+        port=_resolve_routing_port(port),
         mailbox=True,
         publish_agent_details=True,
     )
