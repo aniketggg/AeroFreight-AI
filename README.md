@@ -56,7 +56,7 @@ Copy [.env.example](.env.example) to `.env` and fill in your keys. **Never commi
 ```text
 # --- LLM ---
 ANTHROPIC_API_KEY=replace_with_your_key
-ANTHROPIC_MODEL=claude-sonnet-4-6
+ANTHROPIC_MODEL=claude-opus-4-8
 
 # --- Agent network ---
 AGENT_SEED=replace_with_a_private_random_seed
