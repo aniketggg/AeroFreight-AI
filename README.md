@@ -1,26 +1,37 @@
+
 # AeroFreight AI
 
-**AeroFreight AI** is an autonomous, multi-agent logistics orchestration platform built on the [Fetch.ai uAgents framework](https://fetch.ai/). By utilizing a swarm of specialized agents governed by strict Pydantic data contracts, the system automates the end-to-end logistics lifecycle: from intent parsing and multi-modal routing to automated tax estimation, detailed invoice generation, and secure financial settlement.
+**AeroFreight AI** is an autonomous, multi-agent logistics orchestration platform built on the [Fetch.ai uAgents framework](https://fetch.ai/). By utilizing a swarm of specialized agents governed by strict Pydantic data contracts, the system automates the end-to-end logistics lifecycle: from natural-language intent parsing to multi-modal routing, tax estimation, and secure financial settlement.
 
 ---
 
 ## Architecture Overview
 
-The system employs a **Hub-and-Spoke** orchestration model. A centralized **Orchestrator Agent** acts as the system's "brain," coordinating a swarm of specialized sub-agents.
+The system employs a **Hub-and-Spoke** model. A centralized **Orchestrator Agent** acts as the system's "brain," coordinating a swarm of specialized teammate agents (Economist, Navigator, Treasury).
 
-* **Local vs. Distributed:** The system supports both local deterministic mocks for rapid testing and distributed execution via network addresses (`ECONOMIST_AGENT_ADDRESS`, `ROUTER_AGENT_ADDRESS`, etc.).
-* **Data Contracts:** All inter-agent communication is governed by typed Pydantic models, ensuring modularity and data integrity across network boundaries.
+### The Workflow Loop
+
+```text
+User message (CLI or Agent Chat Protocol)
+  → ConversationController
+  → ClaudeShipmentExtractor (natural-language extraction)
+  → OrchestratorService + validation (deterministic Python)
+  → WorkflowCoordinator
+  → [Mock or Remote] Economist, Routing, and Treasury agents
+  → Quote → User CONFIRM → Simulated Payment → COMPLETED
+
+```
 
 ---
 
 ## Technical Stack
 
-* **Runtime:** Python 3.12+
+* **Runtime:** Python 3.12+ (Requires 3.11+)
 * **Framework:** `uAgents`
-* **Data Validation:** `Pydantic` (Strict type enforcement)
+* **Data Validation:** `Pydantic` (Strict inter-agent contracts)
 * **LLM:** Anthropic Claude 3.5 Sonnet
-* **Payments:** Stripe Integration for invoice settlement
-* **Storage:** Google Drive API for invoice and document persistence
+* **Payments:** Stripe Integration & Fetch.ai Payment Protocol
+* **Geospatial:** `geopy` (Haversine formula implementation)
 
 ---
 
@@ -31,95 +42,83 @@ The system employs a **Hub-and-Spoke** orchestration model. A centralized **Orch
 ```bash
 git clone https://github.com/your-org/aerofreight-ai.git
 cd aerofreight-ai
-python -m venv venv
-source venv/bin/activate
+source ../.venv/bin/activate
 pip install -r requirements.txt
 
 ```
 
 ### 2. Configuration
 
-Create a `.env` file in the root directory. Use the following template:
+Create a `.env` file in the root directory. **Never commit this file.**
 
 ```text
-# --- LLM Configuration ---
+# --- LLM ---
 ANTHROPIC_API_KEY=your_key_here
 ANTHROPIC_MODEL=claude-sonnet-4-6
 
-# --- Agent Network Configuration ---
-AGENT_SEED=your_unique_seed
-AGENT_NAME=
-AGENT_PORT=
+# --- Agent Network ---
+AGENT_SEED=your_private_seed
+AGENT_NAME=aerofreight-orchestrator
+AGENT_PORT=8001
 
 # --- Remote Agent Addresses ---
 ECONOMIST_AGENT_ADDRESS=
-ECONOMIST_AGENT_TIMEOUT_SECONDS=30
 ROUTER_AGENT_ADDRESS=
-ROUTER_AGENT_TIMEOUT_SECONDS=30
 TREASURY_AGENT_ADDRESS=
 
-# --- Financial & Settlement ---
-STRIPE_PUBLISHABLE_KEY=pk_test_...
+# --- Financials & Persistence ---
 STRIPE_SECRET_KEY=sk_test_...
-STRIPE_CURRENCY=usd
-
-# --- Document Persistence ---
-GOOGLE_DRIVE_FOLDER_ID=your_folder_id
-GOOGLE_SERVICE_ACCOUNT_JSON=your_json_string_or_path
+GOOGLE_SERVICE_ACCOUNT_JSON=...
 
 ```
 
 ### 3. Execution
 
-To run the distributed swarm, start the individual agents in separate terminal sessions:
-
+* **Local CLI Demo:** `python -m orchestrator.cli`
+* **Distributed Mode:** Start individual agents in separate terminals:
 ```bash
-# Terminal 1: Start the Economist
-python -m agents.economist
-
-# Terminal 2: Start the Treasury
-python -m agents.treasury
-
-# Terminal 3: Start the Orchestrator
-python orchestrator.py
+python -m economic_agent.agent
+python -m orchestrator.agent
 
 ```
 
----
 
-## Agent Swarm Roles
-
-| Agent | Primary Responsibility |
-| --- | --- |
-| **Orchestrator** | Intent parsing, workflow state management, and agent coordination. |
-| **Economist** | Cargo classification, constraint logic, and U.S. entry tariff calculation. |
-| **Navigator** | Geospatial routing, mode-aware distance calculation, and landed cost estimation. |
-| **Treasury** | PDF invoice generation, Stripe checkout session creation, and escrow settlement. |
 
 ---
 
-## Data Contracts
+## Integration: ASI:One & Agentverse
 
-To prevent data mismatch across network boundaries, all agents adhere to strict Pydantic schemas:
+The Orchestrator exposes the workflow via the **Agent Chat Protocol**.
 
-```python
-class ShipmentRequest(BaseModel):
-    origin: dict
-    destination: dict
-    items: List[Item]
-    total_weight_kg: float
-    total_volume_cbm: float
-    timeframe: Literal["SPEED", "COST"]
-    declared_value_usd: float
-
-```
+1. Run `python -m orchestrator.agent`.
+2. Open the **Inspector URL** provided in the terminal.
+3. Connect via **Mailbox** to chat directly with the agent through the **ASI:One** interface.
 
 ---
 
 ## Logic & Constraints
 
-* **Mode Threshold:** A **150kg Break Point** determines transport modes. Shipments $\le 150\text{kg}$ default to Air; shipments $>150\text{kg}$ trigger a cost-benefit comparison.
-* **Routing:** Uses the Haversine formula and infrastructure-specific datasets (World Port Index/Airports) to calculate real-world costs.
-* **Settlement:** The Treasury agent generates an itemized PDF invoice, triggers a Stripe Checkout session, and confirms settlement before finalizing the shipment record.
+* **Mode Threshold:** We implement a **150kg Break Point**. Shipments $\le 150\text{kg}$ default to Air; shipments $>150\text{kg}$ trigger a cost-benefit comparison.
+* **Deterministic Safety:** While Claude performs intent extraction, all workflow transitions, data validation, and financial calculations are handled by deterministic Python code in `orchestrator/validation.py` and `service.py`.
+* **Settlement:** Once a quote is accepted (`CONFIRM`), the Treasury Agent generates an itemized PDF invoice and initiates the atomic settlement flow.
 
 ---
+
+## Project Structure
+
+```text
+shared_models.py              # Inter-agent Pydantic contracts
+orchestrator/
+  service.py                  # Workflow state machine
+  validation.py               # Deterministic data validation
+  extractor.py                # Claude shipment extraction
+  agent.py                    # uAgent + Agent Chat Protocol entry point
+  cli.py                      # Interactive local demo
+  mock_agents.py              # Local deterministic teammate agents
+tests/                        # Unit tests with mocked Anthropic clients
+
+```
+
+---
+
+*Warning: All freight costs, tariffs, routes, documents, and payments in this repository are simulated demo values for research purposes.*
