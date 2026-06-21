@@ -24,7 +24,7 @@ from orchestrator.mock_agents import (
     MockRoutingAgent,
     MockTreasuryAgent,
 )
-from orchestrator.remote_agents import UAgentsEconomistClient
+from orchestrator.remote_agents import UAgentsEconomistClient, UAgentsRoutingClient
 from orchestrator.service import OrchestratorService
 from orchestrator.uagents_storage import ContextSessionStore
 
@@ -114,6 +114,31 @@ def _resolve_economist(ctx: Context, economist_override=None):
     return MockEconomistAgent()
 
 
+def _resolve_router(ctx: Context, router_override=None):
+    """Use injected router, remote client, or mock fallback."""
+    if router_override is not None:
+        return router_override
+
+    router_address = os.getenv("ROUTER_AGENT_ADDRESS", "").strip()
+    if router_address:
+        timeout_raw = os.getenv("ROUTER_AGENT_TIMEOUT_SECONDS", "30").strip()
+        try:
+            timeout_seconds = int(timeout_raw)
+        except ValueError:
+            timeout_seconds = 30
+        ctx.logger.info("Using remote Router agent from configuration")
+        return UAgentsRoutingClient(
+            ctx,
+            router_address,
+            timeout_seconds=timeout_seconds,
+        )
+
+    ctx.logger.info(
+        "Mock Router mode active (ROUTER_AGENT_ADDRESS not set)"
+    )
+    return MockRoutingAgent()
+
+
 def _build_response_message(response_text: str) -> ChatMessage:
     return ChatMessage(
         timestamp=datetime.now(timezone.utc),
@@ -153,7 +178,7 @@ async def process_chat_message(
             conversation=conversation,
             service=service,
             economist=_resolve_economist(ctx, economist),
-            router=router or MockRoutingAgent(),
+            router=_resolve_router(ctx, router),
             treasury=treasury or MockTreasuryAgent(),
         )
         _, response = await coordinator.handle_user_message_async(
@@ -186,7 +211,6 @@ def create_agent(
             )
         extractor = ClaudeShipmentExtractor()
 
-    router = router or MockRoutingAgent()
     treasury = treasury or MockTreasuryAgent()
 
     agent = Agent(

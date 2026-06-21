@@ -8,9 +8,15 @@ from types import SimpleNamespace
 import pytest
 
 from economic_agent.messages import EconomistError, EconomistRequest, EconomistResponse
-from orchestrator.mock_agents import MockEconomistAgent
-from orchestrator.remote_agents import RemoteEconomistError, UAgentsEconomistClient
-from shared_models import Item, ShipmentRequest
+from orchestrator.mock_agents import MockEconomistAgent, MockRoutingAgent
+from orchestrator.remote_agents import (
+    RemoteEconomistError,
+    RemoteRoutingError,
+    UAgentsEconomistClient,
+    UAgentsRoutingClient,
+)
+from shared_models import EconData, Item, RouteData, ShipmentRequest
+from step3_riya.agent import RouteRequestMessage, RouteResponseMessage
 
 
 def _run(coro):
@@ -194,3 +200,178 @@ def test_send_failure_raises_remote_economist_error_without_internal_details():
     message = str(exc_info.value)
     assert "network down" not in message
     assert "agent1q" not in message
+
+
+def _sample_econ() -> EconData:
+    return MockEconomistAgent().analyze(_sample_shipment())
+
+
+def _sample_route_data() -> RouteData:
+    shipment = _sample_shipment()
+    econ = _sample_econ()
+    return MockRoutingAgent().route(shipment, econ)
+
+
+def test_routing_valid_response_returns_route_data():
+    shipment = _sample_shipment()
+    econ = _sample_econ()
+    expected = _sample_route_data()
+    ctx = FakeContext(
+        reply=RouteResponseMessage(ok=True, route_data=expected.model_dump()),
+        status=SimpleNamespace(detail=None),
+    )
+    client = UAgentsRoutingClient(ctx, "agent1qrouter", timeout_seconds=12)
+
+    result = _run(client.route(shipment, econ))
+
+    assert result == expected
+
+
+def test_routing_request_contains_shipment_model_dump():
+    shipment = _sample_shipment()
+    econ = _sample_econ()
+    expected = _sample_route_data()
+    ctx = FakeContext(
+        reply=RouteResponseMessage(ok=True, route_data=expected.model_dump()),
+        status=SimpleNamespace(detail=None),
+    )
+    client = UAgentsRoutingClient(ctx, "agent1qrouter")
+
+    _run(client.route(shipment, econ))
+
+    request = ctx.last_call["message"]
+    assert isinstance(request, RouteRequestMessage)
+    assert request.shipment == shipment.model_dump()
+
+
+def test_routing_request_contains_econ_model_dump():
+    shipment = _sample_shipment()
+    econ = _sample_econ()
+    expected = _sample_route_data()
+    ctx = FakeContext(
+        reply=RouteResponseMessage(ok=True, route_data=expected.model_dump()),
+        status=SimpleNamespace(detail=None),
+    )
+    client = UAgentsRoutingClient(ctx, "agent1qrouter")
+
+    _run(client.route(shipment, econ))
+
+    request = ctx.last_call["message"]
+    assert request.econ == econ.model_dump()
+
+
+def test_routing_sends_to_configured_destination():
+    shipment = _sample_shipment()
+    econ = _sample_econ()
+    expected = _sample_route_data()
+    ctx = FakeContext(
+        reply=RouteResponseMessage(ok=True, route_data=expected.model_dump()),
+        status=SimpleNamespace(detail=None),
+    )
+    client = UAgentsRoutingClient(ctx, "agent1qremote456", timeout_seconds=15)
+
+    _run(client.route(shipment, econ))
+
+    assert ctx.last_call["destination"] == "agent1qremote456"
+
+
+def test_routing_timeout_passed_to_send_and_receive():
+    shipment = _sample_shipment()
+    econ = _sample_econ()
+    expected = _sample_route_data()
+    ctx = FakeContext(
+        reply=RouteResponseMessage(ok=True, route_data=expected.model_dump()),
+        status=SimpleNamespace(detail=None),
+    )
+    client = UAgentsRoutingClient(ctx, "agent1qrouter", timeout_seconds=45)
+
+    _run(client.route(shipment, econ))
+
+    assert ctx.last_call["timeout"] == 45
+
+
+def test_routing_response_type_is_route_response_message():
+    shipment = _sample_shipment()
+    econ = _sample_econ()
+    expected = _sample_route_data()
+    ctx = FakeContext(
+        reply=RouteResponseMessage(ok=True, route_data=expected.model_dump()),
+        status=SimpleNamespace(detail=None),
+    )
+    client = UAgentsRoutingClient(ctx, "agent1qrouter")
+
+    _run(client.route(shipment, econ))
+
+    assert ctx.last_call["response_type"] is RouteResponseMessage
+
+
+def test_routing_reply_not_ok_raises_remote_routing_error():
+    shipment = _sample_shipment()
+    econ = _sample_econ()
+    ctx = FakeContext(
+        reply=RouteResponseMessage(
+            ok=False,
+            error="internal routing failure details",
+        ),
+        status=SimpleNamespace(detail=None),
+    )
+    client = UAgentsRoutingClient(ctx, "agent1qrouter")
+
+    with pytest.raises(RemoteRoutingError, match="could not process") as exc_info:
+        _run(client.route(shipment, econ))
+
+    assert "internal routing failure details" not in str(exc_info.value)
+
+
+def test_routing_none_response_raises_remote_routing_error():
+    shipment = _sample_shipment()
+    econ = _sample_econ()
+    ctx = FakeContext(reply=None, status=SimpleNamespace(detail="timeout"))
+    client = UAgentsRoutingClient(ctx, "agent1qrouter")
+
+    with pytest.raises(RemoteRoutingError, match="did not respond"):
+        _run(client.route(shipment, econ))
+
+
+def test_routing_unexpected_response_type_raises_remote_routing_error():
+    shipment = _sample_shipment()
+    econ = _sample_econ()
+    ctx = FakeContext(
+        reply=SimpleNamespace(unexpected=True),
+        status=SimpleNamespace(detail=None),
+    )
+    client = UAgentsRoutingClient(ctx, "agent1qrouter")
+
+    with pytest.raises(RemoteRoutingError, match="unexpected response"):
+        _run(client.route(shipment, econ))
+
+
+def test_routing_invalid_route_data_raises_remote_routing_error():
+    shipment = _sample_shipment()
+    econ = _sample_econ()
+    ctx = FakeContext(
+        reply=RouteResponseMessage(
+            ok=True,
+            route_data={"selected_mode": "INVALID"},
+        ),
+        status=SimpleNamespace(detail=None),
+    )
+    client = UAgentsRoutingClient(ctx, "agent1qrouter")
+
+    with pytest.raises(RemoteRoutingError, match="invalid data") as exc_info:
+        _run(client.route(shipment, econ))
+
+    assert exc_info.value.__cause__ is not None
+
+
+def test_routing_send_failure_wraps_with_exception_chaining():
+    shipment = _sample_shipment()
+    econ = _sample_econ()
+    ctx = FakeContext(raise_on_send=RuntimeError("network down"))
+    client = UAgentsRoutingClient(ctx, "agent1qrouter")
+
+    with pytest.raises(RemoteRoutingError, match="could not be reached") as exc_info:
+        _run(client.route(shipment, econ))
+
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+    assert "network down" not in str(exc_info.value)

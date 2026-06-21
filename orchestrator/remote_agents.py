@@ -7,7 +7,8 @@ from typing import Any
 from pydantic import ValidationError
 
 from economic_agent.messages import EconomistError, EconomistRequest, EconomistResponse
-from shared_models import EconData, ShipmentRequest
+from shared_models import EconData, RouteData, ShipmentRequest
+from step3_riya.agent import RouteRequestMessage, RouteResponseMessage
 
 
 class RemoteEconomistError(RuntimeError):
@@ -74,4 +75,78 @@ class UAgentsEconomistClient:
         except ValidationError as exc:
             raise RemoteEconomistError(
                 "The remote Economist agent returned invalid data."
+            ) from exc
+
+
+class RemoteRoutingError(RuntimeError):
+    """Raised when the remote Router cannot be reached or returns invalid data."""
+
+
+class UAgentsRoutingClient:
+    """Call Riya's Router uAgent via Context.send_and_receive."""
+
+    def __init__(
+        self,
+        context: Any,
+        destination: str,
+        timeout_seconds: int = 30,
+    ) -> None:
+        self.context = context
+        self.destination = destination
+        self.timeout_seconds = timeout_seconds
+
+    async def route(
+        self,
+        shipment: ShipmentRequest,
+        econ_data: EconData,
+    ) -> RouteData:
+        """Send shipment and econ data and return parsed RouteData from the remote agent."""
+        request = RouteRequestMessage(
+            shipment=shipment.model_dump(),
+            econ=econ_data.model_dump(),
+        )
+
+        try:
+            reply, status = await self.context.send_and_receive(
+                self.destination,
+                request,
+                response_type=RouteResponseMessage,
+                timeout=self.timeout_seconds,
+            )
+        except Exception as exc:
+            logger = getattr(self.context, "logger", None)
+            if logger is not None:
+                logger.error(
+                    "Remote Router communication failed: %s",
+                    type(exc).__name__,
+                )
+            raise RemoteRoutingError(
+                "The remote Router agent could not be reached."
+            ) from exc
+
+        if reply is None:
+            logger = getattr(self.context, "logger", None)
+            if logger is not None and status is not None:
+                detail = getattr(status, "detail", None)
+                if detail and isinstance(detail, str):
+                    logger.error("Remote Router returned no reply")
+            raise RemoteRoutingError(
+                "The remote Router agent did not respond."
+            )
+
+        if not isinstance(reply, RouteResponseMessage):
+            raise RemoteRoutingError(
+                "The remote Router agent returned an unexpected response."
+            )
+
+        if not reply.ok:
+            raise RemoteRoutingError(
+                "The Router agent could not process the shipment request."
+            )
+
+        try:
+            return RouteData.model_validate(reply.route_data)
+        except ValidationError as exc:
+            raise RemoteRoutingError(
+                "The remote Router agent returned invalid data."
             ) from exc
