@@ -1,9 +1,29 @@
 .env
+**/.env
+
 .venv/
+venv/
+
 __pycache__/
+**/__pycache__/
 .pytest_cache/
 *.pyc
 .DS_Store
+*.log
 
-# Local uAgents runtime storage
+.uagents/
 agent*_data.json
+
+# On-chain platform wallet private key — never commit
+draft/data/platform_wallet.key
+*.key
+
+aerofreight.db
+
+# Local Step 3 starter files
+step3_riya/_starter/
+step3_riya/*.zip
+.idea/
+google_oauth_token.json
+client_secret*.json
+token.json

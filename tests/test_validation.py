@@ -106,7 +106,7 @@ def test_destination_outside_united_states():
         update={"destination": {"country": "CA", "state": "ON", "city": "Toronto"}}
     )
     errors = validate_business_rules(data)
-    assert any("destination country" in e.lower() for e in errors)
+    assert any("outside the united states" in e.lower() for e in errors)
 
 
 def test_origin_inside_united_states():

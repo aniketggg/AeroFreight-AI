@@ -2,8 +2,10 @@
 
 from orchestrator.agent_interfaces import (
     EconomistAgentClient,
+    PaymentSetupResult,
     RoutingAgentClient,
     TreasuryAgentClient,
+    TreasuryPaymentClient,
 )
 from orchestrator.conversation import ConversationController
 from orchestrator.coordinator import WorkflowCoordinator
@@ -18,7 +20,14 @@ from orchestrator.mock_agents import (
     MockRoutingAgent,
     MockTreasuryAgent,
 )
-from orchestrator.remote_agents import RemoteEconomistError, UAgentsEconomistClient
+from orchestrator.remote_agents import (
+    RemoteEconomistError,
+    RemoteRoutingError,
+    RemoteTreasuryError,
+    UAgentsEconomistClient,
+    UAgentsRoutingClient,
+    UAgentsTreasuryPaymentClient,
+)
 from orchestrator.service import OrchestratorService
 from orchestrator.uagents_storage import ContextSessionStore
 
@@ -33,10 +42,16 @@ __all__ = [
     "MockRoutingAgent",
     "MockTreasuryAgent",
     "OrchestratorService",
+    "PaymentSetupResult",
     "RemoteEconomistError",
+    "RemoteRoutingError",
+    "RemoteTreasuryError",
     "RoutingAgentClient",
     "ShipmentExtractor",
     "TreasuryAgentClient",
+    "TreasuryPaymentClient",
     "UAgentsEconomistClient",
+    "UAgentsRoutingClient",
+    "UAgentsTreasuryPaymentClient",
     "WorkflowCoordinator",
 ]
