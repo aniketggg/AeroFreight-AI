@@ -23,3 +23,7 @@ aerofreight.db
 # Local Step 3 starter files
 step3_riya/_starter/
 step3_riya/*.zip
+.idea/
+google_oauth_token.json
+client_secret*.json
+token.json
