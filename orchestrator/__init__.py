@@ -18,6 +18,7 @@ from orchestrator.mock_agents import (
     MockRoutingAgent,
     MockTreasuryAgent,
 )
+from orchestrator.remote_agents import RemoteEconomistError, UAgentsEconomistClient
 from orchestrator.service import OrchestratorService
 from orchestrator.uagents_storage import ContextSessionStore
 
@@ -32,8 +33,10 @@ __all__ = [
     "MockRoutingAgent",
     "MockTreasuryAgent",
     "OrchestratorService",
+    "RemoteEconomistError",
     "RoutingAgentClient",
     "ShipmentExtractor",
     "TreasuryAgentClient",
+    "UAgentsEconomistClient",
     "WorkflowCoordinator",
 ]

@@ -24,6 +24,7 @@ from orchestrator.mock_agents import (
     MockRoutingAgent,
     MockTreasuryAgent,
 )
+from orchestrator.remote_agents import UAgentsEconomistClient
 from orchestrator.service import OrchestratorService
 from orchestrator.uagents_storage import ContextSessionStore
 
@@ -88,6 +89,31 @@ def _load_agent_settings() -> tuple[str, str, int]:
     return agent_seed, agent_name, agent_port
 
 
+def _resolve_economist(ctx: Context, economist_override=None):
+    """Use injected economist, remote client, or mock fallback."""
+    if economist_override is not None:
+        return economist_override
+
+    economist_address = os.getenv("ECONOMIST_AGENT_ADDRESS", "").strip()
+    if economist_address:
+        timeout_raw = os.getenv("ECONOMIST_AGENT_TIMEOUT_SECONDS", "30").strip()
+        try:
+            timeout_seconds = int(timeout_raw)
+        except ValueError:
+            timeout_seconds = 30
+        ctx.logger.info("Using remote Economist agent from configuration")
+        return UAgentsEconomistClient(
+            ctx,
+            economist_address,
+            timeout_seconds=timeout_seconds,
+        )
+
+    ctx.logger.info(
+        "Mock Economist mode active (ECONOMIST_AGENT_ADDRESS not set)"
+    )
+    return MockEconomistAgent()
+
+
 def _build_response_message(response_text: str) -> ChatMessage:
     return ChatMessage(
         timestamp=datetime.now(timezone.utc),
@@ -101,9 +127,9 @@ async def process_chat_message(
     sender: str,
     msg: ChatMessage,
     extractor,
-    economist,
-    router,
-    treasury,
+    economist=None,
+    router=None,
+    treasury=None,
 ) -> None:
     """Acknowledge, process, and respond to an incoming chat message."""
     await ctx.send(
@@ -126,11 +152,11 @@ async def process_chat_message(
         coordinator = WorkflowCoordinator(
             conversation=conversation,
             service=service,
-            economist=economist,
-            router=router,
-            treasury=treasury,
+            economist=_resolve_economist(ctx, economist),
+            router=router or MockRoutingAgent(),
+            treasury=treasury or MockTreasuryAgent(),
         )
-        _, response = coordinator.handle_user_message(
+        _, response = await coordinator.handle_user_message_async(
             sender_address=sender,
             user_message=user_text,
         )
@@ -160,7 +186,6 @@ def create_agent(
             )
         extractor = ClaudeShipmentExtractor()
 
-    economist = economist or MockEconomistAgent()
     router = router or MockRoutingAgent()
     treasury = treasury or MockTreasuryAgent()
 

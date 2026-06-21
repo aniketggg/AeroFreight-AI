@@ -10,13 +10,16 @@ User message (CLI or Agent Chat Protocol)
   → ClaudeShipmentExtractor (natural-language extraction only)
   → OrchestratorService + validation (deterministic Python)
   → WorkflowCoordinator
-  → MockEconomistAgent / MockRoutingAgent / MockTreasuryAgent
+  → MockEconomistAgent or remote Economist uAgent (when configured)
+  → MockRoutingAgent / MockTreasuryAgent
   → Quote → exact CONFIRM → simulated payment → COMPLETED
 ```
 
 **Claude performs natural-language extraction only.** Deterministic Python in `orchestrator/validation.py` and `orchestrator/service.py` validates data and drives workflow transitions.
 
-The mock teammate agents in `orchestrator/mock_agents.py` implement the protocols in `orchestrator/agent_interfaces.py`. The actual Economist, Router, and Treasury agents will be deployed separately on Agentverse. These mock clients will later be replaced by remote Fetch.ai adapters without changing the coordinator's core logic.
+The mock teammate agents in `orchestrator/mock_agents.py` implement the protocols in `orchestrator/agent_interfaces.py`. When `ECONOMIST_AGENT_ADDRESS` is blank, the orchestrator uses `MockEconomistAgent`. When set, the orchestrator calls Ashwin's separately running Economist uAgent via `Context.send_and_receive`. Router and Treasury remain local mocks for now. These mock clients will later be replaced by remote Fetch.ai adapters without changing the coordinator's core logic.
+
+**No Bureau is required** for local Economist integration. Both the orchestrator process and the Economist uAgent must remain running during local integration testing.
 
 **Warning:** All freight costs, tariffs, routes, documents, and payments in this repository are **simulated demo values**. They are not current market prices, legal customs assessments, or real financial transactions.
 
@@ -44,9 +47,13 @@ ANTHROPIC_MODEL=claude-sonnet-4-6
 AGENT_SEED=<your own private random seed>
 AGENT_NAME=aerofreight-orchestrator
 AGENT_PORT=8001
+
+# Leave blank to use MockEconomistAgent.
+ECONOMIST_AGENT_ADDRESS=
+ECONOMIST_AGENT_TIMEOUT_SECONDS=30
 ```
 
-Never commit a real API key or agent seed. `.env` is ignored by Git.
+Never commit a real API key, agent seed, or Economist address. `.env` is ignored by Git.
 
 **Never publish your `.env` file or `AGENT_SEED`.** Anyone with the seed can impersonate your agent identity.
 
@@ -80,7 +87,22 @@ Ship 500 kilograms of semiconductors from Shenzhen, Guangdong, China to Austin, 
 
 ## Run the local uAgent (Agentverse Mailbox)
 
-The uAgent exposes the same orchestrator workflow through the **Agent Chat Protocol**. The process still runs locally on your machine — Claude uses your local `.env` Anthropic key, and the Economist, Router, and Treasury remain mocks.
+The uAgent exposes the same orchestrator workflow through the **Agent Chat Protocol**. The process still runs locally on your machine — Claude uses your local `.env` Anthropic key. Router and Treasury remain mocks. Economist behavior depends on configuration:
+
+- **Blank `ECONOMIST_AGENT_ADDRESS`:** uses the local `MockEconomistAgent`.
+- **Configured `ECONOMIST_AGENT_ADDRESS`:** calls the separately running Economist uAgent.
+
+For remote Economist integration, start both processes and keep them running:
+
+```bash
+# Terminal 1 — Economist uAgent
+python -m economic_agent.agent
+
+# Terminal 2 — Orchestrator uAgent
+python -m orchestrator.agent
+```
+
+Copy the Economist address printed by the first command into `ECONOMIST_AGENT_ADDRESS` in your `.env`. No Bureau is required.
 
 **Important:** Your terminal must remain running while the agent is active. Stopping the process disconnects the local Mailbox bridge.
 
@@ -105,7 +127,7 @@ AeroFreight agent address: agent1q...
 
 Once Mailbox connectivity is established through the Inspector, you can chat with the agent from ASI:One using the agent's public address. Multi-turn workflows are supported — you can provide partial shipment details across messages and type `CONFIRM` when you receive a quote.
 
-The current Economist, Router, and Treasury responses are local mocks. Teammates' remote Agentverse agents will replace these mock clients in a later phase.
+The current Router and Treasury responses are local mocks. When `ECONOMIST_AGENT_ADDRESS` is configured, economic analysis comes from the remote Economist uAgent. Other remote Agentverse agents will replace the remaining mock clients in a later phase.
 
 ## Project layout
 
@@ -121,6 +143,7 @@ orchestrator/
   conversation.py             # User message routing
   agent_interfaces.py         # Protocols for teammate agents
   mock_agents.py              # Local deterministic mock agents
+  remote_agents.py            # Remote uAgents Economist client
   coordinator.py              # End-to-end workflow coordinator
   cli.py                      # Interactive local demo
   agent.py                    # uAgent + Agent Chat Protocol

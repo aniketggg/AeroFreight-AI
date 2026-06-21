@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from shared_models import EconData, RouteData, SettlementStatus
 
 from orchestrator.conversation import ConversationController
@@ -39,6 +41,18 @@ class FakeEconomist:
         self.calls = 0
 
     def analyze(self, shipment):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("economist unavailable")
+        return MockEconomistAgent().analyze(shipment)
+
+
+class AsyncFakeEconomist:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls = 0
+
+    async def analyze(self, shipment):
         self.calls += 1
         if self.fail:
             raise RuntimeError("economist unavailable")
@@ -242,3 +256,86 @@ def test_existing_conversation_tests_still_pass():
     controller = ConversationController(service, FakeExtractor([_complete_partial()]))
     session, _ = controller.process_message("user-1", "ship widgets")
     assert session.stage == WorkflowStage.READY_FOR_ECONOMIST
+
+
+def _run_async(coro):
+    return asyncio.run(coro)
+
+
+def test_async_economist_client_completes_quote_workflow():
+    economist = AsyncFakeEconomist()
+    router = FakeRouter()
+    treasury = FakeTreasury()
+    coordinator = _build_coordinator(
+        economist=economist,
+        router=router,
+        treasury=treasury,
+    )
+
+    session, response = _run_async(
+        coordinator.handle_user_message_async("user-1", "ship widgets")
+    )
+
+    assert session.stage == WorkflowStage.AWAITING_CONFIRMATION
+    assert "## AeroFreight AI Shipment Quote" in response
+    assert economist.calls == 1
+    assert router.calls == 1
+    assert treasury.quote_calls == 1
+
+
+def test_async_path_still_uses_sync_mock_router_and_treasury():
+    economist = AsyncFakeEconomist()
+    router = FakeRouter()
+    treasury = FakeTreasury()
+    coordinator = _build_coordinator(
+        economist=economist,
+        router=router,
+        treasury=treasury,
+    )
+
+    _run_async(coordinator.handle_user_message_async("user-1", "ship widgets"))
+    session, response = _run_async(
+        coordinator.handle_user_message_async("user-1", "CONFIRM")
+    )
+
+    assert session.stage == WorkflowStage.COMPLETED
+    assert router.calls == 1
+    assert treasury.quote_calls == 1
+    assert treasury.payment_calls == 1
+    assert "simulated payment completed" in response.lower()
+
+
+def test_async_economist_failure_moves_session_to_failed():
+    coordinator = _build_coordinator(economist=AsyncFakeEconomist(fail=True))
+    session, response = _run_async(
+        coordinator.handle_user_message_async("user-1", "ship widgets")
+    )
+
+    assert session.stage == WorkflowStage.FAILED
+    assert session.shipment_request is not None
+    assert "economic analysis" in response.lower()
+
+
+def test_sync_mock_clients_still_work_after_async_addition():
+    coordinator = _build_coordinator()
+    session, response = coordinator.handle_user_message("user-1", "ship widgets")
+    assert session.stage == WorkflowStage.AWAITING_CONFIRMATION
+    assert "## AeroFreight AI Shipment Quote" in response
+
+    session, response = coordinator.handle_user_message("user-1", "CONFIRM")
+    assert session.stage == WorkflowStage.COMPLETED
+    assert "simulated payment completed" in response.lower()
+
+
+def test_async_confirmation_behavior_matches_sync():
+    coordinator = _build_coordinator()
+    _run_async(coordinator.handle_user_message_async("user-1", "ship widgets"))
+    session, _ = _run_async(
+        coordinator.handle_user_message_async("user-1", "yes")
+    )
+    assert session.stage == WorkflowStage.AWAITING_CONFIRMATION
+
+    session, _ = _run_async(
+        coordinator.handle_user_message_async("user-1", "confirm")
+    )
+    assert session.stage == WorkflowStage.COMPLETED

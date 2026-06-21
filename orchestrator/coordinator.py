@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import inspect
+from typing import Any
+
 from orchestrator.agent_interfaces import (
     EconomistAgentClient,
     RoutingAgentClient,
@@ -10,6 +13,12 @@ from orchestrator.agent_interfaces import (
 from orchestrator.conversation import ConversationController
 from orchestrator.models import OrchestratorSession, WorkflowStage
 from orchestrator.service import OrchestratorService
+
+
+async def _await_if_needed(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 class WorkflowCoordinator:
@@ -44,6 +53,25 @@ class WorkflowCoordinator:
 
         if session.stage == WorkflowStage.EXECUTING_PAYMENT:
             return self._run_payment_pipeline(sender_address)
+
+        return session, response
+
+    async def handle_user_message_async(
+        self,
+        sender_address: str,
+        user_message: str,
+    ) -> tuple[OrchestratorSession, str]:
+        """Async variant supporting remote agents with awaitable analyze/route methods."""
+        session, response = self.conversation.process_message(
+            sender_address,
+            user_message,
+        )
+
+        if session.stage == WorkflowStage.READY_FOR_ECONOMIST:
+            return await self._run_quote_pipeline_async(sender_address)
+
+        if session.stage == WorkflowStage.EXECUTING_PAYMENT:
+            return await self._run_payment_pipeline_async(sender_address)
 
         return session, response
 
@@ -103,6 +131,66 @@ class WorkflowCoordinator:
 
         return session, quote_result.final_user_prompt
 
+    async def _run_quote_pipeline_async(
+        self,
+        sender_address: str,
+    ) -> tuple[OrchestratorSession, str]:
+        session = self.service.get_or_create_session(sender_address)
+        if session.shipment_request is None:
+            return session, "Shipment details are missing. Please try again."
+
+        shipment = session.shipment_request
+
+        try:
+            self.service.begin_economic_analysis(sender_address)
+            econ_result = await _await_if_needed(self._economist.analyze(shipment))
+        except Exception:
+            session = self.service.mark_failed(
+                sender_address,
+                "Economic analysis failed.",
+            )
+            return session, (
+                "Something went wrong during economic analysis. "
+                "Please try again or start a NEW SHIPMENT."
+            )
+
+        try:
+            self.service.record_econ_result(sender_address, econ_result)
+            route_result = await _await_if_needed(
+                self._router.route(shipment, econ_result)
+            )
+        except Exception:
+            session = self.service.mark_failed(
+                sender_address,
+                "Routing analysis failed.",
+            )
+            return session, (
+                "Something went wrong while calculating routing options. "
+                "Please try again or start a NEW SHIPMENT."
+            )
+
+        try:
+            self.service.record_route_result(sender_address, route_result)
+            quote_result = await _await_if_needed(
+                self._treasury.prepare_quote(
+                    shipment,
+                    econ_result,
+                    route_result,
+                )
+            )
+            session = self.service.record_quote_result(sender_address, quote_result)
+        except Exception:
+            session = self.service.mark_failed(
+                sender_address,
+                "Quote preparation failed.",
+            )
+            return session, (
+                "Something went wrong while preparing your quote. "
+                "Please try again or start a NEW SHIPMENT."
+            )
+
+        return session, quote_result.final_user_prompt
+
     def _run_payment_pipeline(
         self,
         sender_address: str,
@@ -116,6 +204,40 @@ class WorkflowCoordinator:
 
         try:
             payment_result = self._treasury.execute_payment(shipment, route_data)
+            session = self.service.record_payment_result(sender_address, payment_result)
+        except Exception:
+            session = self.service.mark_failed(
+                sender_address,
+                "Simulated payment execution failed.",
+            )
+            return session, (
+                "Something went wrong while executing the simulated payment. "
+                "Please try again or contact support."
+            )
+
+        payment_hash = payment_result.payment_hash or "unknown"
+        response = (
+            "Simulated payment completed successfully. "
+            f"No real payment occurred. Reference: {payment_hash}. "
+            "Type NEW SHIPMENT to begin another workflow."
+        )
+        return session, response
+
+    async def _run_payment_pipeline_async(
+        self,
+        sender_address: str,
+    ) -> tuple[OrchestratorSession, str]:
+        session = self.service.get_or_create_session(sender_address)
+        if session.shipment_request is None or session.route_data is None:
+            return session, "Payment details are missing. Please try again."
+
+        shipment = session.shipment_request
+        route_data = session.route_data
+
+        try:
+            payment_result = await _await_if_needed(
+                self._treasury.execute_payment(shipment, route_data)
+            )
             session = self.service.record_payment_result(sender_address, payment_result)
         except Exception:
             session = self.service.mark_failed(
