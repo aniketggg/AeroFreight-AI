@@ -4,24 +4,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 from uagents import Agent, Context, Protocol
 
-from quote_models import QuoteRequest, QuoteResponse
-from route_logic import RoutingRequest, build_ship_quote
+from step3_riya.quote_models import QuoteRequest, QuoteResponse
+from step3_riya.route_logic import build_ship_quote
+from step3_riya.routing_models import RoutingRequest
 
 
-# Load the private SHIP agent seed from step3_riya/.env
-load_dotenv(Path(__file__).with_name(".env"))
-
-SHIP_AGENT_SEED = os.getenv("SHIP_AGENT_SEED")
-
-if not SHIP_AGENT_SEED:
-    raise RuntimeError("SHIP_AGENT_SEED is missing from .env")
-
-
-# This is a genuine Fetch.ai uAgent with its own identity.
-ship_agent = Agent(
-    name="aerofreight-ship-subagent",
-    seed=SHIP_AGENT_SEED,
-)
+class ShipAgentConfigurationError(Exception):
+    """Raised when SHIP sub-agent configuration is missing or invalid."""
 
 
 ship_quote_protocol = Protocol(
@@ -30,74 +19,121 @@ ship_quote_protocol = Protocol(
 )
 
 
-@ship_quote_protocol.on_message(
-    model=QuoteRequest,
-    replies=QuoteResponse,
-)
-async def handle_ship_quote(
-    ctx: Context,
-    sender: str,
-    msg: QuoteRequest,
-) -> None:
-    ctx.logger.info(f"Received SHIP quote request from {sender}")
+DEFAULT_SHIP_PORT = 8012
 
+
+def _require_ship_seed() -> str:
+    load_dotenv(Path(__file__).with_name(".env"))
+    seed = os.getenv("SHIP_AGENT_SEED", "").strip()
+    if not seed:
+        raise ShipAgentConfigurationError(
+            "SHIP_AGENT_SEED is not configured. "
+            "Set it in step3_riya/.env or the environment."
+        )
+    return seed
+
+
+def _resolve_ship_port(port: int | None = None) -> int:
+    if port is not None:
+        return port
+
+    load_dotenv(Path(__file__).with_name(".env"))
+    raw = os.getenv("SHIP_AGENT_PORT", str(DEFAULT_SHIP_PORT)).strip()
     try:
-        request = RoutingRequest.model_validate(
-            {
-                "shipment": msg.shipment,
-                "econ": msg.econ,
-            }
-        )
+        return int(raw)
+    except ValueError as exc:
+        raise ShipAgentConfigurationError(
+            f"SHIP_AGENT_PORT must be a valid integer, got {raw!r}."
+        ) from exc
 
-        quote = build_ship_quote(request)
 
-        subtotal = round(
-            quote.freight_cost_usd
-            + quote.inland_trucking_cost_usd
-            + quote.tolls_and_route_tariffs_usd,
-            2,
-        )
+def _register_ship_handlers(agent: Agent) -> None:
+    @ship_quote_protocol.on_message(
+        model=QuoteRequest,
+        replies=QuoteResponse,
+    )
+    async def handle_ship_quote(
+        ctx: Context,
+        sender: str,
+        msg: QuoteRequest,
+    ) -> None:
+        ctx.logger.info(f"Received SHIP quote request from {sender}")
 
-        ctx.logger.info(
-            "SHIP quote: %s | $%.2f",
-            " -> ".join(quote.route_nodes),
-            subtotal,
-        )
+        try:
+            request = RoutingRequest.model_validate(
+                {
+                    "shipment": msg.shipment,
+                    "econ": msg.econ,
+                }
+            )
 
-        await ctx.send(
-            sender,
-            QuoteResponse(
-                ok=True,
-                mode="SHIP",
-                optimal_route_nodes=quote.route_nodes,
-                countries_visited=quote.countries_visited,
-                freight_cost_usd=quote.freight_cost_usd,
-                inland_trucking_cost_usd=(
-                    quote.inland_trucking_cost_usd
+            quote = build_ship_quote(request)
+
+            subtotal = round(
+                quote.freight_cost_usd
+                + quote.inland_trucking_cost_usd
+                + quote.tolls_and_route_tariffs_usd,
+                2,
+            )
+
+            ctx.logger.info(
+                "SHIP quote: %s | $%.2f",
+                " -> ".join(quote.route_nodes),
+                subtotal,
+            )
+
+            await ctx.send(
+                sender,
+                QuoteResponse(
+                    ok=True,
+                    mode="SHIP",
+                    optimal_route_nodes=quote.route_nodes,
+                    countries_visited=quote.countries_visited,
+                    freight_cost_usd=quote.freight_cost_usd,
+                    inland_trucking_cost_usd=(
+                        quote.inland_trucking_cost_usd
+                    ),
+                    tolls_and_route_tariffs_usd=(
+                        quote.tolls_and_route_tariffs_usd
+                    ),
+                    freight_and_toll_cost_usd=subtotal,
+                    estimated_transit_days=quote.estimated_transit_days,
                 ),
-                tolls_and_route_tariffs_usd=(
-                    quote.tolls_and_route_tariffs_usd
+            )
+
+        except Exception as exc:
+            ctx.logger.exception("SHIP quote calculation failed")
+
+            await ctx.send(
+                sender,
+                QuoteResponse(
+                    ok=False,
+                    mode="SHIP",
+                    error=str(exc),
                 ),
-                freight_and_toll_cost_usd=subtotal,
-                estimated_transit_days=quote.estimated_transit_days,
-            ),
-        )
+            )
 
-    except Exception as exc:
-        ctx.logger.exception("SHIP quote calculation failed")
-
-        await ctx.send(
-            sender,
-            QuoteResponse(
-                ok=False,
-                mode="SHIP",
-                error=str(exc),
-            ),
-        )
+    agent.include(ship_quote_protocol)
 
 
-ship_agent.include(ship_quote_protocol)
+def create_ship_agent(*, seed: str | None = None, port: int | None = None) -> Agent:
+    """Create and configure the SHIP quote sub-agent."""
+    agent = Agent(
+        name="aerofreight-ship-subagent",
+        seed=seed or _require_ship_seed(),
+        port=_resolve_ship_port(port),
+        mailbox=True,
+        publish_agent_details=True,
+    )
+    _register_ship_handlers(agent)
+    return agent
+
+
+def main() -> None:
+    agent = create_ship_agent()
+    print(f"SHIP sub-agent address: {agent.address}")
+    agent.run()
 
 
 if __name__ == "__main__":
-    ship_agent.run()
+    main()

@@ -6,6 +6,7 @@ from shared_models import EconData, RouteData, SettlementStatus
 
 from orchestrator.models import OrchestratorSession, PartialShipmentData, WorkflowStage
 from orchestrator.session_store import SessionStore
+from orchestrator.location_normalization import normalize_partial_shipment
 from orchestrator.validation import (
     build_shipment_request,
     get_missing_fields,
@@ -43,6 +44,7 @@ class OrchestratorService:
             )
 
         merged = merge_partial_data(session.partial_data, incoming)
+        merged = normalize_partial_shipment(merged)
         session.partial_data = merged
         missing = get_missing_fields(merged)
         validation_errors = validate_business_rules(merged)
@@ -127,6 +129,22 @@ class OrchestratorService:
         self._session_store.save(session)
         return session.model_copy(deep=True)
 
+    def begin_awaiting_payment(
+        self,
+        sender_address: str,
+        result: SettlementStatus,
+    ) -> OrchestratorSession:
+        """Store internal quote data and move directly to payment without confirmation."""
+        session = self._require_session(sender_address)
+        self._ensure_transition(session.stage, WorkflowStage.CALLING_TREASURY)
+        if result.payment_hash:
+            raise ValueError("Quote result must not include a payment hash.")
+        session.settlement_status = result
+        session.stage = WorkflowStage.AWAITING_PAYMENT
+        session.touch()
+        self._session_store.save(session)
+        return session.model_copy(deep=True)
+
     def handle_confirmation(
         self,
         sender_address: str,
@@ -148,13 +166,32 @@ class OrchestratorService:
 
         return session, "Please type exactly CONFIRM to execute payment."
 
+    def mark_payment_pending(
+        self,
+        sender_address: str,
+    ) -> OrchestratorSession:
+        """Move from payment execution to awaiting remote Stripe completion."""
+        session = self._require_session(sender_address)
+        self._ensure_transition(session.stage, WorkflowStage.EXECUTING_PAYMENT)
+        session.stage = WorkflowStage.AWAITING_PAYMENT
+        session.touch()
+        self._session_store.save(session)
+        return session.model_copy(deep=True)
+
     def record_payment_result(
         self,
         sender_address: str,
         result: SettlementStatus,
     ) -> OrchestratorSession:
         session = self._require_session(sender_address)
-        self._ensure_transition(session.stage, WorkflowStage.EXECUTING_PAYMENT)
+        if session.stage not in {
+            WorkflowStage.EXECUTING_PAYMENT,
+            WorkflowStage.AWAITING_PAYMENT,
+        }:
+            raise ValueError(
+                f"Invalid workflow transition from {session.stage} "
+                f"(expected EXECUTING_PAYMENT or AWAITING_PAYMENT)."
+            )
         if not result.payment_hash or not str(result.payment_hash).strip():
             raise ValueError("Payment result must include a payment hash.")
         session.settlement_status = result

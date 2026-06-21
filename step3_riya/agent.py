@@ -1,57 +1,20 @@
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 from typing import Any, Optional
 
 from dotenv import load_dotenv
 from pydantic.v1 import Field
+from shared_models import EconData, RouteData, ShipmentRequest
 from uagents import Agent, Context, Model, Protocol
 
-# Allow imports from the repository root.
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-# Exact shared schemas supplied in the original workflow.
-from schemas import EconData, RouteData, ShipmentRequest
-
-from quote_models import QuoteRequest, QuoteResponse
+from step3_riya.quote_models import QuoteRequest, QuoteResponse
 
 
-# ---------------------------------------------------------------------------
-# Environment and identity
-# ---------------------------------------------------------------------------
+class RoutingConfigurationError(Exception):
+    """Raised when routing agent configuration is missing or invalid."""
 
-load_dotenv(Path(__file__).with_name(".env"))
-
-def require_env(name: str) -> str:
-    value = os.getenv(name)
-
-    if not value:
-        raise RuntimeError(
-            f"{name} is missing from step3_riya/.env"
-        )
-
-    return value
-
-
-RIYA_AGENT_SEED = require_env("RIYA_AGENT_SEED")
-AIR_AGENT_ADDRESS = require_env("AIR_AGENT_ADDRESS")
-SHIP_AGENT_ADDRESS = require_env("SHIP_AGENT_ADDRESS")
-
-
-riya_agent = Agent(
-    name="aerofreight-riya-routing",
-    seed=RIYA_AGENT_SEED,
-)
-
-
-# ---------------------------------------------------------------------------
-# Messages exchanged with the central Orchestrator
-# ---------------------------------------------------------------------------
 
 class RouteRequestMessage(Model):
     """
@@ -69,7 +32,7 @@ class RouteResponseMessage(Model):
     """
     Riya's response to the central Orchestrator.
 
-    route_data matches the exact RouteData schema from schemas.py.
+    route_data matches the exact RouteData schema from shared_models.py.
     """
 
     ok: bool
@@ -83,16 +46,49 @@ routing_protocol = Protocol(
 )
 
 
+DEFAULT_ROUTER_PORT = 8013
+
+
+def _require_env(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise RoutingConfigurationError(
+            f"{name} is not configured. "
+            "Set it in step3_riya/.env or the environment."
+        )
+    return value
+
+
+def _load_routing_settings() -> tuple[str, str, str]:
+    load_dotenv(Path(__file__).with_name(".env"))
+    return (
+        _require_env("RIYA_AGENT_SEED"),
+        _require_env("AIR_AGENT_ADDRESS"),
+        _require_env("SHIP_AGENT_ADDRESS"),
+    )
+
+
+def _resolve_routing_port(port: int | None = None) -> int:
+    if port is not None:
+        return port
+
+    load_dotenv(Path(__file__).with_name(".env"))
+    raw = os.getenv("RIYA_AGENT_PORT", str(DEFAULT_ROUTER_PORT)).strip()
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise RoutingConfigurationError(
+            f"RIYA_AGENT_PORT must be a valid integer, got {raw!r}."
+        ) from exc
+
+
 async def request_transport_quote(
     ctx: Context,
     agent_address: str,
     request: QuoteRequest,
     mode_name: str,
 ) -> QuoteResponse:
-    """
-    Send a real Fetch.ai message to AIR or SHIP and wait for its response.
-    """
-
+    """Send a real Fetch.ai message to AIR or SHIP and wait for its response."""
     ctx.logger.info(f"Requesting {mode_name} quote from {agent_address}")
 
     response, status = await ctx.send_and_receive(
@@ -195,154 +191,176 @@ def select_quote(
     return min(quotes, key=ranking_key)
 
 
-
-@routing_protocol.on_message(
-    model=RouteRequestMessage,
-    replies=RouteResponseMessage,
-)
-async def handle_routing_request(
-    ctx: Context,
-    sender: str,
-    msg: RouteRequestMessage,
+def _register_routing_handlers(
+    agent: Agent,
+    air_agent_address: str,
+    ship_agent_address: str,
 ) -> None:
-    """
-    Exact Step 3 flow:
+    @routing_protocol.on_message(
+        model=RouteRequestMessage,
+        replies=RouteResponseMessage,
+    )
+    async def handle_routing_request(
+        ctx: Context,
+        sender: str,
+        msg: RouteRequestMessage,
+    ) -> None:
+        ctx.logger.info(f"Received routing request from {sender}")
 
-    1. Receive ShipmentRequest + EconData from the Orchestrator.
-    2. Obey Ashwin's transport_preference.
-    3. Request quotes from permitted Fetch.ai sub-agents.
-    4. Select the route using timeframe.
-    5. Add Ashwin's entry tax.
-    6. Return the exact RouteData contract.
-    """
+        try:
+            shipment = ShipmentRequest.model_validate(msg.shipment)
+            econ = EconData.model_validate(msg.econ)
 
-    ctx.logger.info(f"Received routing request from {sender}")
+            destination_country = str(
+                shipment.destination.get("country", "")
+            ).upper()
 
-    try:
-        # Validate against the exact shared contracts.
-        shipment = ShipmentRequest.model_validate(msg.shipment)
-        econ = EconData.model_validate(msg.econ)
+            if destination_country != "US":
+                raise ValueError(
+                    "Step 3 only supports international shipments "
+                    "with a United States destination."
+                )
 
-        destination_country = str(
-            shipment.destination.get("country", "")
-        ).upper()
-
-        if destination_country != "US":
-            raise ValueError(
-                "Step 3 only supports international shipments "
-                "with a United States destination."
+            quote_request = QuoteRequest(
+                shipment=shipment.model_dump(),
+                econ=econ.model_dump(),
             )
 
-        quote_request = QuoteRequest(
-            shipment=shipment.model_dump(),
-            econ=econ.model_dump(),
-        )
+            quotes: list[QuoteResponse] = []
 
-        quotes: list[QuoteResponse] = []
+            if econ.transport_preference == "AIR":
+                air_quote = await request_transport_quote(
+                    ctx,
+                    air_agent_address,
+                    quote_request,
+                    "AIR",
+                )
+                quotes.append(air_quote)
 
-        # Obey Ashwin's exact constraint.
-        if econ.transport_preference == "AIR":
-            air_quote = await request_transport_quote(
-                ctx,
-                AIR_AGENT_ADDRESS,
-                quote_request,
-                "AIR",
-            )
-            quotes.append(air_quote)
+            elif econ.transport_preference == "SHIP":
+                ship_quote = await request_transport_quote(
+                    ctx,
+                    ship_agent_address,
+                    quote_request,
+                    "SHIP",
+                )
+                quotes.append(ship_quote)
 
-        elif econ.transport_preference == "SHIP":
-            ship_quote = await request_transport_quote(
-                ctx,
-                SHIP_AGENT_ADDRESS,
-                quote_request,
-                "SHIP",
-            )
-            quotes.append(ship_quote)
+            elif econ.transport_preference == "EITHER":
+                air_quote = await request_transport_quote(
+                    ctx,
+                    air_agent_address,
+                    quote_request,
+                    "AIR",
+                )
 
-        elif econ.transport_preference == "EITHER":
-            # Contact both real Fetch.ai transport agents.
-            air_quote = await request_transport_quote(
-                ctx,
-                AIR_AGENT_ADDRESS,
-                quote_request,
-                "AIR",
-            )
+                ship_quote = await request_transport_quote(
+                    ctx,
+                    ship_agent_address,
+                    quote_request,
+                    "SHIP",
+                )
 
-            ship_quote = await request_transport_quote(
-                ctx,
-                SHIP_AGENT_ADDRESS,
-                quote_request,
-                "SHIP",
-            )
+                quotes.extend([air_quote, ship_quote])
 
-            quotes.extend([air_quote, ship_quote])
+            else:
+                raise ValueError(
+                    f"Unsupported transport preference: "
+                    f"{econ.transport_preference}"
+                )
 
-        else:
-            raise ValueError(
-                f"Unsupported transport preference: "
-                f"{econ.transport_preference}"
+            selected = select_quote(
+                quotes=quotes,
+                timeframe=shipment.timeframe,
             )
 
-        selected = select_quote(
-            quotes=quotes,
-            timeframe=shipment.timeframe,
-        )
+            transport_cost = round(
+                selected.freight_and_toll_cost_usd,
+                2,
+            )
 
-        transport_cost = round(
-            selected.freight_and_toll_cost_usd,
-            2,
-        )
+            total_landed_cost = round(
+                transport_cost + econ.base_entry_tax_usd,
+                2,
+            )
 
-        total_landed_cost = round(
-            transport_cost + econ.base_entry_tax_usd,
-            2,
-        )
+            route_data = RouteData(
+                selected_mode=selected.mode,
+                optimal_route_nodes=selected.optimal_route_nodes,
+                countries_visited=selected.countries_visited,
+                freight_and_toll_cost_usd=transport_cost,
+                total_landed_cost_usd=total_landed_cost,
+            )
 
-        # Return exactly the original RouteData fields.
-        route_data = RouteData(
-            selected_mode=selected.mode,
-            optimal_route_nodes=selected.optimal_route_nodes,
-            countries_visited=selected.countries_visited,
-            freight_and_toll_cost_usd=transport_cost,
-            total_landed_cost_usd=total_landed_cost,
-        )
+            ctx.logger.info(
+                "Selected %s route | transport $%.2f | landed $%.2f",
+                route_data.selected_mode,
+                route_data.freight_and_toll_cost_usd,
+                route_data.total_landed_cost_usd,
+            )
 
-        ctx.logger.info(
-            "Selected %s route | transport $%.2f | landed $%.2f",
-            route_data.selected_mode,
-            route_data.freight_and_toll_cost_usd,
-            route_data.total_landed_cost_usd,
-        )
+            await ctx.send(
+                sender,
+                RouteResponseMessage(
+                    ok=True,
+                    route_data=route_data.model_dump(),
+                ),
+            )
 
-        await ctx.send(
-            sender,
-            RouteResponseMessage(
-                ok=True,
-                route_data=route_data.model_dump(),
-            ),
-        )
+        except Exception as exc:
+            ctx.logger.exception("Step 3 routing failed")
 
-    except Exception as exc:
-        ctx.logger.exception("Step 3 routing failed")
+            await ctx.send(
+                sender,
+                RouteResponseMessage(
+                    ok=False,
+                    error=str(exc),
+                ),
+            )
 
-        await ctx.send(
-            sender,
-            RouteResponseMessage(
-                ok=False,
-                error=str(exc),
-            ),
-        )
+    agent.include(routing_protocol)
 
-
-riya_agent.include(routing_protocol)
+    @agent.on_event("startup")
+    async def startup(ctx: Context) -> None:
+        ctx.logger.info(f"Riya agent address: {agent.address}")
+        ctx.logger.info(f"AIR sub-agent address: {air_agent_address}")
+        ctx.logger.info(f"SHIP sub-agent address: {ship_agent_address}")
 
 
-@riya_agent.on_event("startup")
-async def startup(ctx: Context) -> None:
-    ctx.logger.info(f"Riya agent address: {riya_agent.address}")
-    ctx.logger.info(f"AIR sub-agent address: {AIR_AGENT_ADDRESS}")
-    ctx.logger.info(f"SHIP sub-agent address: {SHIP_AGENT_ADDRESS}")
+def create_routing_agent(
+    *,
+    seed: str | None = None,
+    air_agent_address: str | None = None,
+    ship_agent_address: str | None = None,
+    port: int | None = None,
+) -> Agent:
+    """Create and configure the main routing uAgent."""
+    if (
+        seed is None
+        or air_agent_address is None
+        or ship_agent_address is None
+    ):
+        loaded_seed, loaded_air, loaded_ship = _load_routing_settings()
+        seed = seed or loaded_seed
+        air_agent_address = air_agent_address or loaded_air
+        ship_agent_address = ship_agent_address or loaded_ship
+
+    agent = Agent(
+        name="aerofreight-riya-routing",
+        seed=seed,
+        port=_resolve_routing_port(port),
+        mailbox=True,
+        publish_agent_details=True,
+    )
+    _register_routing_handlers(agent, air_agent_address, ship_agent_address)
+    return agent
+
+
+def main() -> None:
+    agent = create_routing_agent()
+    print(f"Riya routing agent address: {agent.address}")
+    agent.run()
 
 
 if __name__ == "__main__":
-    riya_agent.run()
+    main()

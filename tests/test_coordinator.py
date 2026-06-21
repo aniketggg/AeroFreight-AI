@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from shared_models import EconData, RouteData, SettlementStatus
 
+from orchestrator.agent_interfaces import PaymentSetupResult
 from orchestrator.conversation import ConversationController
 from orchestrator.coordinator import WorkflowCoordinator
 from orchestrator.mock_agents import (
@@ -39,6 +42,18 @@ class FakeEconomist:
         self.calls = 0
 
     def analyze(self, shipment):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("economist unavailable")
+        return MockEconomistAgent().analyze(shipment)
+
+
+class AsyncFakeEconomist:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls = 0
+
+    async def analyze(self, shipment):
         self.calls += 1
         if self.fail:
             raise RuntimeError("economist unavailable")
@@ -83,6 +98,47 @@ class FakeTreasury:
         return self._delegate.execute_payment(shipment, route_data)
 
 
+class FakeTreasuryPaymentClient:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.setup_calls: list[dict] = []
+
+    async def prepare_payment(
+        self,
+        *,
+        user_address: str,
+        session_id: str,
+        shipment,
+        econ_data,
+        route_data,
+        doc_templates,
+    ) -> PaymentSetupResult:
+        self.setup_calls.append(
+            {
+                "user_address": user_address,
+                "session_id": session_id,
+                "doc_templates": doc_templates,
+            }
+        )
+        if self.fail:
+            raise RuntimeError("payment setup unavailable")
+        return PaymentSetupResult(
+            checkout={
+                "client_secret": "secret_test",
+                "id": "cs_test_123",
+                "checkout_session_id": "cs_test_123",
+                "publishable_key": "pk_test",
+                "currency": "usd",
+                "amount_cents": 500,
+                "ui_mode": "embedded",
+            },
+            fee_usd=5.0,
+        )
+
+    async def finalize_payment(self, **kwargs):
+        raise NotImplementedError
+
+
 def _complete_partial() -> PartialShipmentData:
     return PartialShipmentData(
         origin={"country": "CN", "state": "Guangdong", "city": "Shenzhen"},
@@ -100,6 +156,7 @@ def _build_coordinator(
     economist: FakeEconomist | None = None,
     router: FakeRouter | None = None,
     treasury: FakeTreasury | None = None,
+    treasury_payment_client: FakeTreasuryPaymentClient | None = None,
     extractor_responses: list[PartialShipmentData] | None = None,
 ) -> WorkflowCoordinator:
     store = InMemorySessionStore()
@@ -114,6 +171,7 @@ def _build_coordinator(
         economist=economist or FakeEconomist(),
         router=router or FakeRouter(),
         treasury=treasury or FakeTreasury(),
+        treasury_payment_client=treasury_payment_client,
     )
 
 
@@ -242,3 +300,160 @@ def test_existing_conversation_tests_still_pass():
     controller = ConversationController(service, FakeExtractor([_complete_partial()]))
     session, _ = controller.process_message("user-1", "ship widgets")
     assert session.stage == WorkflowStage.READY_FOR_ECONOMIST
+
+
+def _run_async(coro):
+    return asyncio.run(coro)
+
+
+def test_async_economist_client_completes_quote_workflow():
+    economist = AsyncFakeEconomist()
+    router = FakeRouter()
+    treasury = FakeTreasury()
+    coordinator = _build_coordinator(
+        economist=economist,
+        router=router,
+        treasury=treasury,
+    )
+
+    session, response, _ = _run_async(
+        coordinator.handle_user_message_async("user-1", "ship widgets")
+    )
+
+    assert session.stage == WorkflowStage.AWAITING_CONFIRMATION
+    assert "## AeroFreight AI Shipment Quote" in response
+    assert economist.calls == 1
+    assert router.calls == 1
+    assert treasury.quote_calls == 1
+
+
+def test_async_path_still_uses_sync_mock_router_and_treasury():
+    economist = AsyncFakeEconomist()
+    router = FakeRouter()
+    treasury = FakeTreasury()
+    coordinator = _build_coordinator(
+        economist=economist,
+        router=router,
+        treasury=treasury,
+    )
+
+    _run_async(coordinator.handle_user_message_async("user-1", "ship widgets"))
+    session, response, _ = _run_async(
+        coordinator.handle_user_message_async("user-1", "CONFIRM")
+    )
+
+    assert session.stage == WorkflowStage.COMPLETED
+    assert router.calls == 1
+    assert treasury.quote_calls == 1
+    assert treasury.payment_calls == 1
+    assert "simulated payment completed" in response.lower()
+
+
+def test_async_economist_failure_moves_session_to_failed():
+    coordinator = _build_coordinator(economist=AsyncFakeEconomist(fail=True))
+    session, response, _ = _run_async(
+        coordinator.handle_user_message_async("user-1", "ship widgets")
+    )
+
+    assert session.stage == WorkflowStage.FAILED
+    assert session.shipment_request is not None
+    assert "economic analysis" in response.lower()
+
+
+def test_sync_mock_clients_still_work_after_async_addition():
+    coordinator = _build_coordinator()
+    session, response = coordinator.handle_user_message("user-1", "ship widgets")
+    assert session.stage == WorkflowStage.AWAITING_CONFIRMATION
+    assert "## AeroFreight AI Shipment Quote" in response
+
+    session, response = coordinator.handle_user_message("user-1", "CONFIRM")
+    assert session.stage == WorkflowStage.COMPLETED
+    assert "simulated payment completed" in response.lower()
+
+
+def test_async_confirmation_behavior_matches_sync():
+    coordinator = _build_coordinator()
+    _run_async(coordinator.handle_user_message_async("user-1", "ship widgets"))
+    session, _, _ = _run_async(
+        coordinator.handle_user_message_async("user-1", "yes")
+    )
+    assert session.stage == WorkflowStage.AWAITING_CONFIRMATION
+
+    session, _, _ = _run_async(
+        coordinator.handle_user_message_async("user-1", "confirm")
+    )
+    assert session.stage == WorkflowStage.COMPLETED
+
+
+def test_remote_mode_begins_payment_without_confirm():
+    client = FakeTreasuryPaymentClient()
+    coordinator = _build_coordinator(treasury_payment_client=client)
+    session, response, setup = _run_async(
+        coordinator.handle_user_message_async("user-1", "ship widgets")
+    )
+
+    assert session.stage == WorkflowStage.AWAITING_PAYMENT
+    assert session.stage != WorkflowStage.AWAITING_CONFIRMATION
+    assert len(client.setup_calls) == 1
+    assert setup is not None
+    assert "Suggested mode" not in response
+    assert "stripe payment" in response.lower()
+
+
+def test_remote_mode_does_not_require_confirm():
+    client = FakeTreasuryPaymentClient()
+    coordinator = _build_coordinator(treasury_payment_client=client)
+    _run_async(coordinator.handle_user_message_async("user-1", "ship widgets"))
+    session, response, setup = _run_async(
+        coordinator.handle_user_message_async("user-1", "CONFIRM")
+    )
+
+    assert session.stage == WorkflowStage.AWAITING_PAYMENT
+    assert setup is None
+    assert len(client.setup_calls) == 1
+
+
+def test_remote_mode_quote_not_returned_before_payment():
+    coordinator = _build_coordinator(treasury_payment_client=FakeTreasuryPaymentClient())
+    _, response, _ = _run_async(
+        coordinator.handle_user_message_async("user-1", "ship widgets")
+    )
+    assert "## AeroFreight AI Shipment Quote" not in response
+
+
+def test_remote_mode_derives_doc_templates_for_setup():
+    client = FakeTreasuryPaymentClient()
+    coordinator = _build_coordinator(treasury_payment_client=client)
+    _run_async(coordinator.handle_user_message_async("user-1", "ship widgets"))
+    docs = client.setup_calls[0]["doc_templates"]
+    session = coordinator.service.get_or_create_session("user-1")
+    assert docs.required_form_names == list(session.settlement_status.filled_documents.keys())
+
+
+def test_remote_setup_failure_moves_session_to_failed():
+    coordinator = _build_coordinator(
+        treasury_payment_client=FakeTreasuryPaymentClient(fail=True),
+    )
+    session, response, setup = _run_async(
+        coordinator.handle_user_message_async("user-1", "ship widgets")
+    )
+
+    assert session.stage == WorkflowStage.FAILED
+    assert setup is None
+    assert "payment" in response.lower()
+
+
+def test_remote_two_users_remain_independent():
+    client = FakeTreasuryPaymentClient()
+    coordinator = _build_coordinator(
+        treasury_payment_client=client,
+        extractor_responses=[_complete_partial(), _complete_partial()],
+    )
+    _run_async(coordinator.handle_user_message_async("user-a", "ship a"))
+    _run_async(coordinator.handle_user_message_async("user-b", "ship b"))
+
+    session_a = coordinator.service.get_or_create_session("user-a")
+    session_b = coordinator.service.get_or_create_session("user-b")
+    assert session_a.stage == WorkflowStage.AWAITING_PAYMENT
+    assert session_b.stage == WorkflowStage.AWAITING_PAYMENT
+    assert client.setup_calls[0]["session_id"] != client.setup_calls[1]["session_id"]

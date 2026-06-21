@@ -29,7 +29,8 @@ Rules:
 - Convert wording such as "fast," "urgent," "quickest," and "as soon as possible" to SPEED.
 - Convert wording such as "cheap," "cheapest," "budget," and "lowest cost" to COST.
 - Normalize obvious country codes to uppercase.
-- You may fill well-known unambiguous geography, such as Austin being in Texas, but must not guess ambiguous cities.
+- For U.S. destinations, prefer country "United States" with city and state/region fields, for example Austin + Texas + United States.
+- When the user gives a U.S. city and state without a country, still extract the city and state; do not invent a non-U.S. country.
 - You may infer a broad item category only when clearly implied by the item.
 - Do not default an unknown quantity to 1.
 - Do not interpret CONFIRM or NEW SHIPMENT as shipment information.

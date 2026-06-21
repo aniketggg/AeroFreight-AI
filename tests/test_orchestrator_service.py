@@ -160,6 +160,79 @@ def test_payment_result_missing_hash():
         )
 
 
+def test_begin_awaiting_payment_skips_confirmation_stage():
+    service = _service()
+    service.apply_extracted_data("user-1", _complete_partial())
+    service.begin_economic_analysis("user-1")
+    service.record_econ_result(
+        "user-1",
+        EconData(
+            transport_preference="AIR",
+            is_high_value=False,
+            is_luxury=False,
+            base_entry_tax_usd=100.0,
+        ),
+    )
+    service.record_route_result(
+        "user-1",
+        RouteData(
+            selected_mode="AIR",
+            optimal_route_nodes=["A", "B"],
+            countries_visited=["CN", "US"],
+            freight_and_toll_cost_usd=500.0,
+            total_landed_cost_usd=600.0,
+        ),
+    )
+    session = service.begin_awaiting_payment(
+        "user-1",
+        SettlementStatus(filled_documents={}, final_user_prompt="hidden"),
+    )
+    assert session.stage == WorkflowStage.AWAITING_PAYMENT
+    assert session.settlement_status is not None
+
+
+def test_mark_payment_pending_from_executing_payment():
+    service = _service()
+    service.apply_extracted_data("user-1", _complete_partial())
+    _advance_to_awaiting_confirmation(service, "user-1")
+    service.handle_confirmation("user-1", "CONFIRM")
+    session = service.mark_payment_pending("user-1")
+    assert session.stage == WorkflowStage.AWAITING_PAYMENT
+
+
+def test_payment_result_completes_from_awaiting_payment():
+    service = _service()
+    service.apply_extracted_data("user-1", _complete_partial())
+    _advance_to_awaiting_confirmation(service, "user-1")
+    service.handle_confirmation("user-1", "CONFIRM")
+    service.mark_payment_pending("user-1")
+    session = service.record_payment_result(
+        "user-1",
+        SettlementStatus(
+            filled_documents={},
+            final_user_prompt="Paid",
+            payment_hash="cs_test_123",
+        ),
+    )
+    assert session.stage == WorkflowStage.COMPLETED
+    assert session.settlement_status.payment_hash == "cs_test_123"
+
+
+def test_payment_result_rejects_invalid_stage():
+    service = _service()
+    service.apply_extracted_data("user-1", _complete_partial())
+    _advance_to_awaiting_confirmation(service, "user-1")
+    with pytest.raises(ValueError):
+        service.record_payment_result(
+            "user-1",
+            SettlementStatus(
+                filled_documents={},
+                final_user_prompt="Paid",
+                payment_hash="cs_test_123",
+            ),
+        )
+
+
 def test_quote_result_rejects_payment_hash():
     service = _service()
     service.apply_extracted_data("user-1", _complete_partial())

@@ -1,35 +1,8 @@
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-
-class Item(BaseModel):
-    name: str
-    quantity: int
-    category: str
-
-
-class ShipmentRequest(BaseModel):
-    origin: dict = Field(
-        ...,
-        description="{'country': 'CN', 'state': 'Guangdong', 'city': 'Shenzhen'}",
-    )
-    destination: dict = Field(
-        ...,
-        description="{'country': 'US', 'state': 'TX', 'city': 'Austin'}",
-    )
-    items: List[Item]
-    total_weight_kg: float
-    total_volume_cbm: float
-    timeframe: Literal["SPEED", "COST"]
-    declared_value_usd: float
-
-
-class EconData(BaseModel):
-    transport_preference: Literal["AIR", "SHIP", "EITHER"]
-    is_high_value: bool
-    is_luxury: bool
-    base_entry_tax_usd: float
+from shared_models import EconData, ShipmentRequest
 
 
 class RoutingRequest(BaseModel):
@@ -38,6 +11,8 @@ class RoutingRequest(BaseModel):
 
 
 class RouteData(BaseModel):
+    """Detailed internal route breakdown used by route_logic."""
+
     selected_mode: Literal["AIR", "SHIP"]
     optimal_route_nodes: List[str]
     countries_visited: List[str]

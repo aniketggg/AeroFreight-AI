@@ -4,9 +4,10 @@ from dataclasses import dataclass
 from math import asin, cos, radians, sin, sqrt
 from typing import Iterable, Literal
 
-from routing_models import RouteData, RoutingRequest
-from airport_data import airports_in_country
-from port_data import ports_in_country
+from step3_riya.routing_models import RouteData, RoutingRequest
+from step3_riya.airport_data import airports_in_country
+from step3_riya.port_data import ports_in_country
+from step3_riya.city_data import find_city_coordinates, normalize_country
 
 Mode = Literal["AIR", "SHIP"]
 
@@ -94,7 +95,7 @@ SHIP_HUBS = (
 
 
 def _normalize_country(value: object) -> str:
-    return str(value or "").strip().upper()
+    return normalize_country(value)
 
 
 def _normalize_city(value: object) -> str:
@@ -102,15 +103,18 @@ def _normalize_city(value: object) -> str:
 
 
 def resolve_coordinates(location: dict) -> tuple[float, float]:
-    country = _normalize_country(location.get("country"))
-    city = _normalize_city(location.get("city"))
-    coordinates = CITY_COORDINATES.get((country, city))
-    if coordinates is None:
+    try:
+        return find_city_coordinates(location)
+    except ValueError as exc:
+        country = _normalize_country(location.get("country"))
+        city = _normalize_city(location.get("city"))
+        coordinates = CITY_COORDINATES.get((country, city))
+        if coordinates is not None:
+            return coordinates
         raise UnsupportedLocationError(
             f"No coordinates configured for city={location.get('city')!r}, "
             f"country={location.get('country')!r}."
-        )
-    return coordinates
+        ) from exc
 
 
 def haversine_km(
