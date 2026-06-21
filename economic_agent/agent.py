@@ -35,7 +35,7 @@ from shared_models import ShipmentRequest  # noqa: E402
 
 # Deterministic seed -> stable address, so the orchestrator can resolve this
 # agent from config without a handshake (override via env for deployments).
-ECONOMIC_SEED = os.getenv("AEROFREIGHT_ECONOMIC_SEED", "aerofreight-economic-seed-v1")
+ECONOMIC_SEED = os.getenv("AEROFREIGHT_ECONOMIC_SEED", "aerofreight-economic-seed-v5")
 ECONOMIC_PORT = int(os.getenv("AEROFREIGHT_ECONOMIC_PORT", "8002"))
 
 # Set AEROFREIGHT_MAILBOX=true to reach this agent across processes (Agentverse);
