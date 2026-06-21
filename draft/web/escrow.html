@@ -168,6 +168,9 @@
   .saved .lbl { display: flex; align-items: center; gap: 9px; color: var(--green); font-weight: 600; font-size: 14px; }
   .saved .amt { color: var(--green); font-weight: 800; font-size: 18px; font-variant-numeric: tabular-nums; }
   .saved svg { width: 16px; height: 16px; }
+  /* Over-budget variant (amber) — shown when total exceeds the budget. */
+  .saved.over-budget { background: linear-gradient(100deg, rgba(255,179,71,0.14), rgba(255,179,71,0.05)); border-color: rgba(255,179,71,0.32); }
+  .saved.over-budget .lbl, .saved.over-budget .amt { color: var(--amber); }
 
   /* ---------- ETA badges ---------- */
   .eta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -267,6 +270,12 @@
   .dispatch .d-stat { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--green); display: flex; align-items: center; gap: 6px; }
   .dispatch .d-stat .dot { width: 6px; height: 6px; }
   .success-meta { margin-top: 24px; font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--txt-2); }
+  /* On-chain settlement receipt */
+  .settlement { max-width: 480px; margin: 24px auto 0; text-align: left; background: rgba(10,15,28,0.55); border: 1px solid var(--glass-brd); border-radius: 12px; padding: 6px 16px; }
+  .settlement .kv { padding: 10px 0; }
+  .settlement .v a { color: var(--cyan); text-decoration: none; }
+  .settlement .v a:hover { text-decoration: underline; }
+  .chain-badge { display: inline-flex; align-items: center; gap: 7px; margin-top: 16px; font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--cyan); background: rgba(46,230,214,0.08); border: 1px solid rgba(46,230,214,0.22); padding: 6px 12px; border-radius: 999px; }
   .success-meta .cid { color: var(--cyan); }
 
   /* ---------- Confetti ---------- */
@@ -317,7 +326,7 @@
     </div>
 
     <!-- ===== Banner (warnings / fallback notice) ===== -->
-    <div class="banner warn" id="banner">
+    <div class="banner warn" id="banner" role="alert" aria-live="assertive">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <span id="bannerText"></span>
     </div>
@@ -380,7 +389,7 @@
             <div class="fin-row"><span class="lbl">Customs duty <span id="dutyRateInline" class="mono" style="color:var(--txt-2);font-size:12px"></span></span><span class="amt" id="duty">—</span></div>
             <div class="fin-row fin-total"><span class="lbl">Total in escrow</span><span class="amt" id="total">—</span></div>
             <div class="saved" id="savedBox">
-              <span class="lbl">
+              <span class="lbl" id="savedLbl">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5" stroke-linecap="round" stroke-linejoin="round"/></svg>
                 Saved vs. budget
               </span>
@@ -420,20 +429,26 @@
     </div>
 
     <!-- ================= SUCCESS VIEW ================= -->
-    <div id="successView">
+    <div id="successView" aria-live="polite">
       <div class="card success-card">
         <div class="check-burst">
           <svg viewBox="0 0 24 24" fill="none" stroke="#2bd97a" stroke-width="2.5">
             <path class="check-path" d="M5 12l5 5L19 7" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </div>
-        <h2>Escrow Funded — <span class="grad">Carriers Dispatched</span></h2>
+        <h2 tabindex="-1">Escrow Funded — <span class="grad">Carriers Dispatched</span></h2>
         <p>Your funds are secured on-chain and both carriers have been notified. Tracking begins the moment your cargo is tendered.</p>
 
         <div class="dispatch-list" id="dispatchList"><!-- carriers injected --></div>
 
-        <div class="success-meta">
-          contract <span class="cid" id="successCid">—</span> · status <span style="color:var(--green)">FUNDED</span>
+        <div class="settlement">
+          <div class="kv"><span class="k">Escrow contract</span><span class="v mono cid" id="successCid">—</span></div>
+          <div class="kv"><span class="k">Status</span><span class="v" style="color:var(--green)">● FUNDED</span></div>
+          <div class="kv" id="txRow" style="display:none"><span class="k">On-chain tx</span><span class="v mono"><a id="txLink" href="#" target="_blank" rel="noopener">—</a></span></div>
+          <div class="kv" id="amtRow" style="display:none"><span class="k">Locked</span><span class="v mono" id="amtVal">—</span></div>
+        </div>
+        <div class="chain-badge" id="chainBadge" style="display:none">
+          <span class="dot"></span> <span id="chainText">settled on-chain</span>
         </div>
       </div>
     </div>
@@ -549,11 +564,20 @@
     const saved = bol.savings_usd != null
       ? bol.savings_usd
       : (Number(bol.budget_usd || 0) - Number(bol.total_usd || 0));
-    if (saved > 0) {
+    const savedBox = $("savedBox");
+    savedBox.style.display = "flex";
+    const checkIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    const warnIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    if (saved >= 0) {
+      // Under or on budget — green "saved" badge.
+      savedBox.classList.remove("over-budget");
+      $("savedLbl").innerHTML = checkIcon + " Saved vs. budget";
       $("saved").textContent = usd(saved);
-      $("savedBox").style.display = "flex";
     } else {
-      $("savedBox").style.display = "none";
+      // Over budget — amber warning, consistent with the chat plan's "Over by $X".
+      savedBox.classList.add("over-budget");
+      $("savedLbl").innerHTML = warnIcon + " Over budget";
+      $("saved").textContent = usd(Math.abs(saved));
     }
 
     // Transit / ETA
@@ -563,7 +587,12 @@
     $("eta").innerHTML = `${fmtDate(bol.eta_iso)}`;
 
     const dBox = $("deadlineBox");
-    if (bol.meets_deadline) {
+    if (!bol.eta_iso || !bol.deadline_iso) {
+      // Don't assert a confident on-time/late verdict without both dates.
+      dBox.classList.remove("deadline-bad");
+      dBox.querySelector("svg").innerHTML = '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2" stroke-linecap="round" stroke-linejoin="round"/>';
+      $("deadlineText").textContent = "Transit estimate pending.";
+    } else if (bol.meets_deadline) {
       dBox.classList.remove("deadline-bad");
       dBox.querySelector("svg").innerHTML = '<path d="M20 6L9 17l-5-5" stroke-linecap="round" stroke-linejoin="round"/>';
       $("deadlineText").textContent = `On time — arrives ${fmtDate(bol.eta_iso)}, ahead of the ${fmtDate(bol.deadline_iso)} deadline`;
@@ -586,12 +615,36 @@
     $("banner").classList.add("show");
   }
 
+  // Degraded state for a REAL contract id whose record we couldn't load. We must
+  // NOT show sample financials here — that would invite authorizing fabricated
+  // amounts against a real contract. Blank everything and disable authorization.
+  function renderUnavailable(cid) {
+    CURRENT = null;
+    $("contractId").textContent = cid || "—";
+    ["freight", "duty", "total", "budget", "saved", "weight", "dutyRate",
+     "ctaAmount", "shipmentRef", "vendor", "transit", "commodity", "eta"]
+      .forEach((id) => { $(id).textContent = "—"; });
+    $("hsCode").textContent = "—";
+    $("hsDesc").textContent = "";
+    $("dutyRateInline").textContent = "";
+    $("savedBox").style.display = "none";
+    $("routeBox").innerHTML = '<div class="leg-meta">Route details unavailable.</div>';
+    const dBox = $("deadlineBox");
+    dBox.classList.add("deadline-bad");
+    dBox.querySelector("svg").innerHTML = '<path d="M12 8v4m0 4h.01" stroke-linecap="round"/><circle cx="12" cy="12" r="9"/>';
+    $("deadlineText").textContent = "Settlement details unavailable.";
+    const btn = $("fundBtn");
+    btn.disabled = true;
+    btn.innerHTML = "Settlement details unavailable — cannot authorize";
+  }
+
   // ---- Load BoL ------------------------------------------------------------
   async function load() {
     const params = new URLSearchParams(window.location.search);
     const cid = params.get("cid");
 
     if (!cid) {
+      // No contract id at all -> this is a preview; a clearly-labelled sample is fine.
       showBanner("No contract id supplied — showing a sample Bill of Lading for preview.");
       render(SAMPLE);
       return;
@@ -603,9 +656,10 @@
       const data = await res.json();
       render(data);
     } catch (err) {
-      showBanner("Couldn't reach the settlement service — displaying a sample Bill of Lading. (" + err.message + ")");
-      // Keep the supplied cid so the contract id still reads correctly.
-      render(Object.assign({}, SAMPLE, { contract_id: cid }));
+      // Real cid but no record (server restarted / API down): show a degraded
+      // state and DISABLE authorization rather than invent settlement figures.
+      showBanner("Couldn't load settlement details for this contract — authorization is disabled until the record is available. (" + err.message + ")");
+      renderUnavailable(cid);
     }
   }
 
@@ -627,36 +681,88 @@
     setTimeout(() => { root.innerHTML = ""; }, 5200);
   }
 
-  // ---- Fund flow -----------------------------------------------------------
-  function fund() {
+  // ---- Fund flow (REAL on-chain settlement) --------------------------------
+  const FUND_BTN_HTML =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 11V7a7 7 0 0114 0v4" stroke-linecap="round"/><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M12 15v2" stroke-linecap="round"/></svg> Authorize &amp; Fund Escrow';
+
+  function showSuccess(settlement) {
+    const bol = CURRENT || SAMPLE;
+    const legs = Array.isArray(bol.legs) && bol.legs.length ? bol.legs : SAMPLE.legs;
+
+    // Carrier dispatch cards from the actual legs.
+    $("dispatchList").innerHTML = legs.map((leg) => `
+      <div class="dispatch">
+        <div class="ico">${modeIcon(leg.mode)}</div>
+        <div class="d-body">
+          <div class="d-name">${esc(leg.carrier)}</div>
+          <div class="d-sub">${esc(leg.service)} · ${esc(leg.from_node)} → ${esc(leg.to_node)}</div>
+        </div>
+        <div class="d-stat"><span class="dot"></span> DISPATCHED</div>
+      </div>`).join("");
+
+    $("successCid").textContent = (settlement && settlement.contract_id) || bol.contract_id || "—";
+
+    // Real on-chain settlement receipt (present when a real tx was broadcast).
+    if (settlement && settlement.tx_hash) {
+      const h = settlement.tx_hash;
+      const link = $("txLink");
+      link.textContent = h.slice(0, 10) + "…" + h.slice(-8) + " ↗";
+      link.href = settlement.explorer_url || "#";
+      $("txRow").style.display = "flex";
+      if (settlement.amount_fet != null) {
+        $("amtVal").textContent = settlement.amount_fet + " TESTFET";
+        $("amtRow").style.display = "flex";
+      }
+      $("chainText").textContent = "settled on " + (settlement.chain_id || "Fetch.ai testnet");
+      $("chainBadge").style.display = "inline-flex";
+    }
+
+    $("authorizeView").style.display = "none";
+    $("successView").style.display = "block";
+    // Move focus to the success heading so screen-reader/keyboard users learn the
+    // page changed (focus was on the now-hidden Authorize button).
+    const successHeading = $("successView").querySelector("h2");
+    if (successHeading) successHeading.focus();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    fireConfetti();
+  }
+
+  async function fund() {
     const btn = $("fundBtn");
     if (btn.disabled) return;
+    const params = new URLSearchParams(window.location.search);
+    const cid = params.get("cid");
     btn.disabled = true;
-    btn.innerHTML = '<span class="btn-spinner"></span> Authorizing on-chain…';
+    btn.setAttribute("aria-busy", "true");
+    btn.innerHTML = '<span class="btn-spinner"></span> Submitting on-chain…';
 
-    // Simulate the on-chain authorization round-trip, then flip to success.
-    setTimeout(() => {
-      const bol = CURRENT || SAMPLE;
-      const legs = Array.isArray(bol.legs) && bol.legs.length ? bol.legs : SAMPLE.legs;
+    // Preview/sample mode (no real contract): keep the simulated success.
+    if (!cid || !CURRENT) {
+      setTimeout(() => showSuccess(null), 1100);
+      return;
+    }
 
-      // Build the carrier dispatch list from the actual legs.
-      $("dispatchList").innerHTML = legs.map((leg) => `
-        <div class="dispatch">
-          <div class="ico">${modeIcon(leg.mode)}</div>
-          <div class="d-body">
-            <div class="d-name">${esc(leg.carrier)}</div>
-            <div class="d-sub">${esc(leg.service)} · ${esc(leg.from_node)} → ${esc(leg.to_node)}</div>
-          </div>
-          <div class="d-stat"><span class="dot"></span> DISPATCHED</div>
-        </div>`).join("");
-
-      $("successCid").textContent = bol.contract_id || "—";
-
-      $("authorizeView").style.display = "none";
-      $("successView").style.display = "block";
-      window.scrollTo({ top: 0, behavior: "smooth" });
-      fireConfetti();
-    }, 1100);
+    // Real settlement: POST to the backend, which signs + broadcasts a real
+    // Fetch.ai testnet transaction and returns the tx hash + explorer link.
+    try {
+      const res = await fetch(`/escrow/${encodeURIComponent(cid)}/authorize`, {
+        method: "POST",
+        headers: { Accept: "application/json" },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const d = data && data.detail;
+        const msg = (d && (d.message || d)) || ("HTTP " + res.status);
+        throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+      }
+      showSuccess(data);
+    } catch (err) {
+      // Re-enable so the user can retry once the chain/funding is available.
+      btn.disabled = false;
+      btn.removeAttribute("aria-busy");
+      btn.innerHTML = FUND_BTN_HTML;
+      showBanner("On-chain settlement isn't available yet (" + err.message + ") — please retry.");
+    }
   }
 
   // ---- Copy contract id ----------------------------------------------------

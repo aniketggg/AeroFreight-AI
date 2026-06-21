@@ -5,3 +5,7 @@ __pycache__/
 .DS_Store
 *.log
 .uagents/
+# On-chain platform wallet private key — never commit
+draft/data/platform_wallet.key
+*.key
+aerofreight.db

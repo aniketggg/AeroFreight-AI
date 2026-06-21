@@ -11,15 +11,20 @@ adapter that bridges the uAgents message bus to that HTTP endpoint.
 
 from __future__ import annotations
 
+import os
+
 import httpx
 from uagents import Agent, Context
 
 from agents.config import API_BASE_URL, FREIGHT_SEED, SUBAGENT_TIMEOUT
 from agents.messages import FreightLeg, FreightRequest, FreightResponse
 
+# Set AEROFREIGHT_MAILBOX=true for a multi-process / Agentverse deploy so an
+# out-of-process orchestrator can reach this agent; False for the local Bureau.
+_USE_MAILBOX = os.getenv("AEROFREIGHT_MAILBOX", "false").lower() == "true"
 
 # Deterministic seed -> stable address that the orchestrator already knows.
-freight_agent = Agent(name="freight-router-agent", seed=FREIGHT_SEED)
+freight_agent = Agent(name="freight-router-agent", seed=FREIGHT_SEED, mailbox=_USE_MAILBOX)
 
 
 @freight_agent.on_message(model=FreightRequest)

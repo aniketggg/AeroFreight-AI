@@ -11,6 +11,8 @@ The agent is intentionally thin: all customs logic lives in
 table can be reused by other tools and tested independently.
 """
 
+import os
+
 from uagents import Agent, Context
 
 from agents.config import TARIFF_SEED, API_BASE_URL, SUBAGENT_TIMEOUT
@@ -18,9 +20,14 @@ from agents.messages import TariffRequest, TariffResponse
 
 import httpx
 
+# When deploying the agents as separate processes (e.g. on Agentverse), set
+# AEROFREIGHT_MAILBOX=true so an out-of-process orchestrator can reach this
+# agent via its mailbox. In the local Bureau demo it stays False (in-process).
+_USE_MAILBOX = os.getenv("AEROFREIGHT_MAILBOX", "false").lower() == "true"
+
 # Single agent instance; address is derived deterministically from TARIFF_SEED
 # so peers can resolve it from config without a handshake.
-tariff_agent = Agent(name="tariff-agent", seed=TARIFF_SEED)
+tariff_agent = Agent(name="tariff-agent", seed=TARIFF_SEED, mailbox=_USE_MAILBOX)
 
 
 @tariff_agent.on_message(model=TariffRequest)

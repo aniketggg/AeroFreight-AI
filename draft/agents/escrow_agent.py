@@ -17,6 +17,7 @@ Design notes
   page reads that id and fetches ``/bol/{cid}`` to draw the Bill of Lading.
 """
 
+import os
 from uuid import uuid4
 
 from uagents import Agent, Context
@@ -24,9 +25,13 @@ from uagents import Agent, Context
 from agents.config import ESCROW_SEED, WEB_BASE_URL
 from agents.messages import EscrowRequest, EscrowResponse
 
+# Set AEROFREIGHT_MAILBOX=true for a multi-process / Agentverse deploy so an
+# out-of-process orchestrator can reach this agent; False for the local Bureau.
+_USE_MAILBOX = os.getenv("AEROFREIGHT_MAILBOX", "false").lower() == "true"
+
 # The escrow agent. The seed is fixed in config so its address is stable across
 # runs and the orchestrator can address it without any discovery handshake.
-escrow_agent = Agent(name="escrow-payment-agent", seed=ESCROW_SEED)
+escrow_agent = Agent(name="escrow-payment-agent", seed=ESCROW_SEED, mailbox=_USE_MAILBOX)
 
 
 @escrow_agent.on_message(model=EscrowRequest)

@@ -1,7 +1,10 @@
 # AeroFreight AI — Python 3.12 ONLY (3.13/3.14 break uagents' event-loop init).
 # Recommended: `uv venv --python 3.12 && uv pip install -r requirements.txt`
 uagents==0.25.2
+cosmpy>=0.11,<0.13        # on-chain escrow on the Fetch.ai testnet (ships with uagents too)
 fastapi>=0.115,<1.0
 uvicorn[standard]>=0.49,<1.0
 httpx>=0.28,<1.0
 requests>=2.32
+# Real data sources are fetched at build time into ./data (USITC HTS + OpenFlights);
+# no extra runtime deps. Persistence uses the stdlib sqlite3.
