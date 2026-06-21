@@ -41,7 +41,7 @@ User message (CLI, Agent Chat Protocol, or browser UI via server.py)
 ### 1. Installation
 
 ```bash
-git clone <your-repo-url>
+git clone [https://github.com/aniketggg/AeroFreight-AI/](https://github.com/aniketggg/AeroFreight-AI/)
 cd AeroFreight-AI
 python -m venv .venv && source .venv/bin/activate   # or .venv\Scripts\activate on Windows
 pip install -r requirements.txt
