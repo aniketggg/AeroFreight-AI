@@ -9,3 +9,7 @@ __pycache__/
 draft/data/platform_wallet.key
 *.key
 aerofreight.db
+
+# Environment variables
+.env
+**/.env
