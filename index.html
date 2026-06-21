@@ -235,9 +235,6 @@ input[type=range]::-moz-range-thumb{ width:20px; height:20px; border:0; border-r
 .modal-card h3{ font-size:15px; font-weight:800; margin-bottom:4px; }
 .modal-card .sub{ font-size:12px; color:var(--dim); margin-bottom:18px; }
 #checkout-element{ min-height:320px; }
-.modal-close{ float:right; background:transparent; border:1px solid var(--line); color:var(--dim); border-radius:10px;
-  width:30px; height:30px; cursor:pointer; font-size:14px; }
-.modal-close:hover{ color:var(--text); border-color:var(--accent); }
 
 /* ---------------------------- Nav ---------------------------- */
 .nav{ display:flex; justify-content:space-between; align-items:center; gap:14px; margin-top:32px; }
@@ -548,7 +545,6 @@ footer b{ color:var(--dim); font-weight:600; }
 <!-- payment modal -->
 <div class="modal-backdrop" id="paymentModal">
   <div class="modal-card">
-    <button type="button" class="modal-close" id="paymentModalClose">✕</button>
     <h3>Settle AeroFreight Service Fee</h3>
     <div class="sub">Complete checkout below. This unlocks your invoice and documents.</div>
     <div id="checkout-element"></div>
@@ -864,7 +860,6 @@ async function openPaymentModal(checkout, sessionId){
   }, 2500);
 }
 
-$("#paymentModalClose").addEventListener("click", closePaymentModal);
 
 async function dispatchShipmentToAgent(){
   if (!validate(0) || !validate(1) || !validate(2)) {
