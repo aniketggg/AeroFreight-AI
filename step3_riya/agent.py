@@ -112,25 +112,80 @@ def select_quote(
     timeframe: str,
 ) -> QuoteResponse:
     """
-    Apply the Step 3 decision matrix.
+    Rank permitted AIR/SHIP quotes using both cost and time.
 
-    SPEED chooses the fastest permitted quote.
-    COST chooses the cheapest permitted quote.
+    COST: 80% cost, 20% time.
+    SPEED: 20% cost, 80% time.
     """
-
     if not quotes:
-        raise RuntimeError("No valid transport quotes were returned.")
-
-    if timeframe == "SPEED":
-        return min(
-            quotes,
-            key=lambda quote: quote.estimated_transit_days,
+        raise RuntimeError(
+            "No valid transport quotes were returned."
         )
 
-    return min(
-        quotes,
-        key=lambda quote: quote.freight_and_toll_cost_usd,
-    )
+    costs = [
+        quote.freight_and_toll_cost_usd
+        for quote in quotes
+    ]
+    times = [
+        quote.estimated_transit_days
+        for quote in quotes
+    ]
+
+    minimum_cost = min(costs)
+    maximum_cost = max(costs)
+    minimum_time = min(times)
+    maximum_time = max(times)
+
+    def normalize(
+        value: float,
+        minimum: float,
+        maximum: float,
+    ) -> float:
+        if maximum == minimum:
+            return 0.0
+
+        return (value - minimum) / (maximum - minimum)
+
+    if timeframe == "SPEED":
+        cost_weight = 0.20
+        time_weight = 0.80
+    else:
+        cost_weight = 0.80
+        time_weight = 0.20
+
+    def ranking_key(
+        quote: QuoteResponse,
+    ) -> tuple[float, float, float]:
+        score = (
+            cost_weight
+            * normalize(
+                quote.freight_and_toll_cost_usd,
+                minimum_cost,
+                maximum_cost,
+            )
+            + time_weight
+            * normalize(
+                quote.estimated_transit_days,
+                minimum_time,
+                maximum_time,
+            )
+        )
+
+        if timeframe == "SPEED":
+            return (
+                score,
+                quote.estimated_transit_days,
+                quote.freight_and_toll_cost_usd,
+            )
+
+        return (
+            score,
+            quote.freight_and_toll_cost_usd,
+            quote.estimated_transit_days,
+        )
+
+    return min(quotes, key=ranking_key)
+
 
 
 @routing_protocol.on_message(

@@ -79,7 +79,7 @@ async def handle_ship_quote(
                     quote.tolls_and_route_tariffs_usd
                 ),
                 freight_and_toll_cost_usd=subtotal,
-                estimated_transit_days=24.0,
+                estimated_transit_days=quote.estimated_transit_days,
             ),
         )
 
