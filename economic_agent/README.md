@@ -25,20 +25,28 @@ Orchestrator --ShipmentRequest--> [economic-constraints-agent] --EconData--> Orc
 ## Layout
 - `economics.py` — pure, framework-agnostic logic (no uAgents dependency). Public entry point: `compute_econ_data(req) -> EconData`. `explain(req)` returns a verbose breakdown for logs/UI.
 - `agent.py` — thin uAgents wrapper: `@on_message(ShipmentRequest, replies=EconData)`.
-- `test_economics.py` — boundary tests (weight bands, $2,500 threshold, MPF clamps, duty classification).
+- `demo.py` — runs four sample shipments through the pure logic and prints `EconData` + tax breakdown (no agent stack needed).
+- `run_local.py` — live uAgents round-trip: a stub orchestrator sends a `ShipmentRequest`, the real agent replies with `EconData` over the transport.
+- `test_economics.py` — 18 tests for the pure math (weight bands, $2,500 threshold, MPF clamps, duty classification).
+- `test_agent.py` — 14 tests for the uAgents layer (handler replies correct `EconData` to sender via a fake `Context`; deterministic address; handler/reply registration; schema-digest regression guard).
 
 ## Run
 
 ```bash
 # from repo root
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt          # uagents + pydantic
+pip install -r requirements.txt          # uagents + pydantic (+ pytest)
 
-# tests (logic only — no agent stack needed)
-python -m economic_agent.test_economics
-# or: pytest economic_agent/test_economics.py
+# all tests (32) — no network needed
+python -m economic_agent.test_economics  # pure logic   (or: pytest economic_agent/test_economics.py)
+python -m economic_agent.test_agent      # uAgents layer (or: pytest economic_agent/test_agent.py)
+pytest economic_agent/                   # both at once
 
-# run the agent (prints its address for the orchestrator to wire up)
+# see outputs
+python -m economic_agent.demo            # sample EconData via pure logic
+python -m economic_agent.run_local       # live agent round-trip → prints EconData JSON
+
+# run just the agent (prints its address for the orchestrator to wire up)
 python -m economic_agent.agent
 ```
 

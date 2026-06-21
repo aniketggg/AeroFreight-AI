@@ -16,7 +16,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from economic_agent.economics import compute_econ_data, explain  # noqa: E402
-from shared_models import Item, ShipmentRequest  # noqa: E402
+from shared_models import Item, ShipmentRequest, dump  # noqa: E402
 
 
 # (label, ShipmentRequest) — tweak these freely.
@@ -74,7 +74,7 @@ def main():
               f"declared ${req.declared_value_usd:,.0f} | "
               f"items={[i.name for i in req.items]}")
         print("  EconData (Ashwin's output):")
-        print("   ", json.dumps(econ.model_dump(), indent=6).replace("\n", "\n    "))
+        print("   ", json.dumps(dump(econ), indent=6).replace("\n", "\n    "))
         print(f"  tax = MPF ${bd['merchandise_processing_fee_usd']:,.2f} + "
               f"duty ${bd['duty_usd']:,.2f} ({bd['duty_rate_pct']}%, {bd['duty_classification']})")
     print("=" * 78)

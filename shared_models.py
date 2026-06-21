@@ -22,12 +22,26 @@ identical, so the orchestrator's Anthropic/OpenAI structured-output calls and
 
 from typing import List, Literal, Optional
 
-from pydantic import Field
-
+# IMPORTANT: uAgents 0.25.x is built on **pydantic v1** (its ``Model``
+# subclasses ``pydantic.v1.BaseModel``). ``Field`` must come from the SAME
+# pydantic API as the base class, or the schema digest uAgents derives for
+# routing breaks ("FieldInfo is not JSON serializable"). So we match it.
 try:  # Production / agent runtime: real wire model with a schema digest.
     from uagents import Model as _Base
+
+    try:
+        from pydantic.v1 import Field  # pydantic v2 present; uAgents' v1 shim
+    except ImportError:
+        from pydantic import Field  # a genuine pydantic v1 install
 except ImportError:  # Logic + tests without the agent stack installed.
-    from pydantic import BaseModel as _Base
+    from pydantic import BaseModel as _Base, Field
+
+
+def dump(model) -> dict:
+    """Version-agnostic dict export (v2 ``model_dump`` / v1 ``dict``)."""
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    return model.dict()
 
 
 # --------------------------------------------------------------------------- #
