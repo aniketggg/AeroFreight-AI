@@ -1,86 +1,72 @@
 from __future__ import annotations
 
-import json
 import os
 import sys
-from datetime import datetime, timezone
-from typing import Any
-from uuid import uuid4
+from pathlib import Path
+from typing import Any, Optional
 
-from openai import OpenAI
+from dotenv import load_dotenv
 from pydantic.v1 import Field
 from uagents import Agent, Context, Model, Protocol
-from uagents_core.contrib.protocols.chat import (
-    ChatAcknowledgement,
-    ChatMessage,
-    EndSessionContent,
-    TextContent,
-    chat_protocol_spec,
-)
 
-from route_logic import calculate_route
-from routing_models import (
-    EconData,
-    Item,
-    RoutingRequest,
-    ShipmentRequest,
+# Allow imports from the repository root.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+# Exact shared schemas supplied in the original workflow.
+from schemas import EconData, RouteData, ShipmentRequest
+
+from air_agent import air_agent
+from quote_models import QuoteRequest, QuoteResponse
+from ship_agent import ship_agent
+
+
+# ---------------------------------------------------------------------------
+# Environment and identity
+# ---------------------------------------------------------------------------
+
+load_dotenv(Path(__file__).with_name(".env"))
+
+RIYA_AGENT_SEED = os.getenv("RIYA_AGENT_SEED")
+
+if not RIYA_AGENT_SEED:
+    raise RuntimeError("RIYA_AGENT_SEED is missing from step3_riya/.env")
+
+
+riya_agent = Agent(
+    name="aerofreight-riya-routing",
+    seed=RIYA_AGENT_SEED,
 )
 
 
 # ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
-AGENT_NAME = "aerofreight-riya-routing"
-AGENT_PORT = 8003
-
-# Keep this false while developing locally so your current Agentverse
-# certificate issue does not prevent the agent from starting.
-ENABLE_MAILBOX = os.getenv("ENABLE_MAILBOX", "false").lower() == "true"
-
-AGENT_SEED = os.getenv(
-    "RIYA_AGENT_SEED",
-    "aerofreight riya routing agent development seed phrase",
-)
-
-
-agent_options: dict[str, Any] = {
-    "name": AGENT_NAME,
-    "seed": AGENT_SEED,
-    "port": AGENT_PORT,
-}
-
-# Enable this only when you are ready to connect to Agentverse/ASI:One.
-if ENABLE_MAILBOX:
-    agent_options["mailbox"] = True
-    agent_options["publish_agent_details"] = True
-
-
-riya_agent = Agent(**agent_options)
-
-
-# ---------------------------------------------------------------------------
-# Structured messages used by the central AeroFreight orchestrator
+# Messages exchanged with the central Orchestrator
 # ---------------------------------------------------------------------------
 
 class RouteRequestMessage(Model):
     """
-    Message sent by the central orchestrator to Riya.
+    Message sent by the central Orchestrator to Riya.
 
-    The payload must match the RoutingRequest Pydantic model.
+    shipment must match ShipmentRequest.
+    econ must match EconData.
     """
 
-    payload: dict[str, Any]
+    shipment: dict[str, Any]
+    econ: dict[str, Any]
 
 
 class RouteResponseMessage(Model):
     """
-    Message returned by Riya to the central orchestrator.
+    Riya's response to the central Orchestrator.
+
+    route_data matches the exact RouteData schema from schemas.py.
     """
 
     ok: bool
-    payload: dict[str, Any] = Field(default_factory=dict)
-    error: str | None = None
+    route_data: dict[str, Any] = Field(default_factory=dict)
+    error: Optional[str] = None
 
 
 routing_protocol = Protocol(
@@ -89,44 +75,192 @@ routing_protocol = Protocol(
 )
 
 
+async def request_transport_quote(
+    ctx: Context,
+    agent_address: str,
+    request: QuoteRequest,
+    mode_name: str,
+) -> QuoteResponse:
+    """
+    Send a real Fetch.ai message to AIR or SHIP and wait for its response.
+    """
+
+    ctx.logger.info(f"Requesting {mode_name} quote from {agent_address}")
+
+    response, status = await ctx.send_and_receive(
+        agent_address,
+        request,
+        response_type=QuoteResponse,
+    )
+
+    if not isinstance(response, QuoteResponse):
+        raise RuntimeError(
+            f"{mode_name} agent did not return a valid quote. "
+            f"Status: {status}"
+        )
+
+    if not response.ok:
+        raise RuntimeError(
+            response.error or f"{mode_name} quote calculation failed."
+        )
+
+    return response
+
+
+def select_quote(
+    quotes: list[QuoteResponse],
+    timeframe: str,
+) -> QuoteResponse:
+    """
+    Apply the Step 3 decision matrix.
+
+    SPEED chooses the fastest permitted quote.
+    COST chooses the cheapest permitted quote.
+    """
+
+    if not quotes:
+        raise RuntimeError("No valid transport quotes were returned.")
+
+    if timeframe == "SPEED":
+        return min(
+            quotes,
+            key=lambda quote: quote.estimated_transit_days,
+        )
+
+    return min(
+        quotes,
+        key=lambda quote: quote.freight_and_toll_cost_usd,
+    )
+
+
 @routing_protocol.on_message(
     model=RouteRequestMessage,
     replies=RouteResponseMessage,
 )
-async def handle_structured_route_request(
+async def handle_routing_request(
     ctx: Context,
     sender: str,
     msg: RouteRequestMessage,
 ) -> None:
     """
-    Handle the normal orchestrator -> Riya workflow.
+    Exact Step 3 flow:
 
-    This path does not call an LLM because the orchestrator has already
-    collected and validated the shipment information.
+    1. Receive ShipmentRequest + EconData from the Orchestrator.
+    2. Obey Ashwin's transport_preference.
+    3. Request quotes from permitted Fetch.ai sub-agents.
+    4. Select the route using timeframe.
+    5. Add Ashwin's entry tax.
+    6. Return the exact RouteData contract.
     """
 
-    ctx.logger.info(f"Received structured routing request from {sender}")
+    ctx.logger.info(f"Received routing request from {sender}")
 
     try:
-        request = RoutingRequest.model_validate(msg.payload)
-        result = calculate_route(request)
+        # Validate against the exact shared contracts.
+        shipment = ShipmentRequest.model_validate(msg.shipment)
+        econ = EconData.model_validate(msg.econ)
+
+        destination_country = str(
+            shipment.destination.get("country", "")
+        ).upper()
+
+        if destination_country != "US":
+            raise ValueError(
+                "Step 3 only supports international shipments "
+                "with a United States destination."
+            )
+
+        quote_request = QuoteRequest(
+            shipment=shipment.model_dump(),
+            econ=econ.model_dump(),
+        )
+
+        quotes: list[QuoteResponse] = []
+
+        # Obey Ashwin's exact constraint.
+        if econ.transport_preference == "AIR":
+            air_quote = await request_transport_quote(
+                ctx,
+                str(air_agent.address),
+                quote_request,
+                "AIR",
+            )
+            quotes.append(air_quote)
+
+        elif econ.transport_preference == "SHIP":
+            ship_quote = await request_transport_quote(
+                ctx,
+                str(ship_agent.address),
+                quote_request,
+                "SHIP",
+            )
+            quotes.append(ship_quote)
+
+        elif econ.transport_preference == "EITHER":
+            # Contact both real Fetch.ai transport agents.
+            air_quote = await request_transport_quote(
+                ctx,
+                str(air_agent.address),
+                quote_request,
+                "AIR",
+            )
+
+            ship_quote = await request_transport_quote(
+                ctx,
+                str(ship_agent.address),
+                quote_request,
+                "SHIP",
+            )
+
+            quotes.extend([air_quote, ship_quote])
+
+        else:
+            raise ValueError(
+                f"Unsupported transport preference: "
+                f"{econ.transport_preference}"
+            )
+
+        selected = select_quote(
+            quotes=quotes,
+            timeframe=shipment.timeframe,
+        )
+
+        transport_cost = round(
+            selected.freight_and_toll_cost_usd,
+            2,
+        )
+
+        total_landed_cost = round(
+            transport_cost + econ.base_entry_tax_usd,
+            2,
+        )
+
+        # Return exactly the original RouteData fields.
+        route_data = RouteData(
+            selected_mode=selected.mode,
+            optimal_route_nodes=selected.optimal_route_nodes,
+            countries_visited=selected.countries_visited,
+            freight_and_toll_cost_usd=transport_cost,
+            total_landed_cost_usd=total_landed_cost,
+        )
 
         ctx.logger.info(
-            "Selected %s route with total landed cost $%.2f",
-            result.selected_mode,
-            result.total_landed_cost_usd,
+            "Selected %s route | transport $%.2f | landed $%.2f",
+            route_data.selected_mode,
+            route_data.freight_and_toll_cost_usd,
+            route_data.total_landed_cost_usd,
         )
 
         await ctx.send(
             sender,
             RouteResponseMessage(
                 ok=True,
-                payload=result.model_dump(),
+                route_data=route_data.model_dump(),
             ),
         )
 
     except Exception as exc:
-        ctx.logger.exception("Structured routing request failed")
+        ctx.logger.exception("Step 3 routing failed")
 
         await ctx.send(
             sender,
@@ -137,372 +271,15 @@ async def handle_structured_route_request(
         )
 
 
-# ---------------------------------------------------------------------------
-# ASI:One Chat Protocol
-# ---------------------------------------------------------------------------
+riya_agent.include(routing_protocol)
 
-chat_protocol = Protocol(spec=chat_protocol_spec)
-
-
-def get_asi_client() -> OpenAI:
-    """
-    Create an ASI:One API client.
-
-    ASI:One exposes an OpenAI-compatible API.
-    """
-
-    api_key = os.getenv("ASI1_API_KEY")
-
-    if not api_key:
-        raise RuntimeError(
-            "ASI1_API_KEY is not set. Export your ASI:One API key before "
-            "sending natural-language chat requests."
-        )
-
-    return OpenAI(
-        base_url="https://api.asi1.ai/v1",
-        api_key=api_key,
-    )
-
-
-def extract_json_object(text: str) -> dict[str, Any]:
-    """
-    Parse JSON returned by ASI:One.
-
-    This also handles responses surrounded by Markdown code fences.
-    """
-
-    cleaned = text.strip()
-
-    if cleaned.startswith("```"):
-        lines = cleaned.splitlines()
-
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-
-        cleaned = "\n".join(lines).strip()
-
-    try:
-        parsed = json.loads(cleaned)
-    except json.JSONDecodeError:
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-
-        if start == -1 or end == -1 or end <= start:
-            raise ValueError(
-                f"ASI:One did not return a valid JSON object: {cleaned}"
-            )
-
-        parsed = json.loads(cleaned[start : end + 1])
-
-    if not isinstance(parsed, dict):
-        raise ValueError("ASI:One response must be a JSON object.")
-
-    return parsed
-
-
-def convert_text_to_routing_request(user_text: str) -> dict[str, Any]:
-    """
-    Use ASI:One to convert natural language into RoutingRequest JSON.
-
-    The actual route and prices are still calculated deterministically by
-    route_logic.py rather than invented by the language model.
-    """
-
-    client = get_asi_client()
-
-    system_prompt = """
-You are the input adapter for AeroFreight AI's routing agent.
-
-Convert the user's shipment description into the exact RoutingRequest
-structure shown below.
-
-If every required value is present, return only:
-
-{
-  "status": "complete",
-  "data": {
-    "shipment": {
-      "origin": {
-        "country": "two-letter country code",
-        "state": "state or province",
-        "city": "city"
-      },
-      "destination": {
-        "country": "US",
-        "state": "US state",
-        "city": "US city"
-      },
-      "items": [
-        {
-          "name": "item name",
-          "quantity": 1,
-          "category": "category"
-        }
-      ],
-      "total_weight_kg": 0.0,
-      "total_volume_cbm": 0.0,
-      "timeframe": "SPEED or COST",
-      "declared_value_usd": 0.0
-    },
-    "econ": {
-      "transport_preference": "AIR, SHIP, or EITHER",
-      "is_high_value": false,
-      "is_luxury": false,
-      "base_entry_tax_usd": 0.0
-    }
-  }
-}
-
-If any required value is missing, return only:
-
-{
-  "status": "missing",
-  "prompt": "A concise question asking for the missing information."
-}
-
-Rules:
-- Do not calculate freight prices.
-- Do not calculate the final route.
-- Do not invent missing tax information.
-- The destination country must be the United States.
-- timeframe must be exactly SPEED or COST.
-- transport_preference must be exactly AIR, SHIP, or EITHER.
-- Return valid JSON only, with no Markdown or explanation.
-""".strip()
-
-    response = client.chat.completions.create(
-        model="asi1",
-        messages=[
-            {
-                "role": "system",
-                "content": system_prompt,
-            },
-            {
-                "role": "user",
-                "content": user_text,
-            },
-        ],
-        max_tokens=1500,
-    )
-
-    content = response.choices[0].message.content
-
-    if not content:
-        raise ValueError("ASI:One returned an empty response.")
-
-    return extract_json_object(str(content))
-
-
-def extract_chat_text(msg: ChatMessage) -> str:
-    """
-    Combine all text chunks in an incoming ChatMessage.
-    """
-
-    chunks: list[str] = []
-
-    for item in msg.content:
-        if isinstance(item, TextContent):
-            chunks.append(item.text)
-
-    return "\n".join(chunks).strip()
-
-
-async def send_chat_response(
-    ctx: Context,
-    recipient: str,
-    text: str,
-) -> None:
-    """
-    Return a standard ASI:One-compatible ChatMessage.
-    """
-
-    await ctx.send(
-        recipient,
-        ChatMessage(
-            timestamp=datetime.now(timezone.utc),
-            msg_id=uuid4(),
-            content=[
-                TextContent(
-                    type="text",
-                    text=text,
-                ),
-                EndSessionContent(type="end-session"),
-            ],
-        ),
-    )
-
-
-@chat_protocol.on_message(ChatMessage)
-async def handle_chat_message(
-    ctx: Context,
-    sender: str,
-    msg: ChatMessage,
-) -> None:
-    """
-    Handle a natural-language message from ASI:One Chat.
-
-    ASI:One extracts the structured request. The deterministic routing engine
-    then calculates the route and cost breakdown.
-    """
-
-    await ctx.send(
-        sender,
-        ChatAcknowledgement(
-            timestamp=datetime.now(timezone.utc),
-            acknowledged_msg_id=msg.msg_id,
-        ),
-    )
-
-    user_text = extract_chat_text(msg)
-
-    if not user_text:
-        await send_chat_response(
-            ctx,
-            sender,
-            "Please provide a shipment routing request.",
-        )
-        return
-
-    ctx.logger.info(f"Received ASI:One chat request from {sender}")
-
-    try:
-        extraction = convert_text_to_routing_request(user_text)
-
-        if extraction.get("status") == "missing":
-            prompt = extraction.get(
-                "prompt",
-                "Additional shipment information is required.",
-            )
-
-            await send_chat_response(
-                ctx,
-                sender,
-                str(prompt),
-            )
-            return
-
-        if extraction.get("status") != "complete":
-            raise ValueError(
-                "ASI:One returned an unsupported extraction status."
-            )
-
-        request = RoutingRequest.model_validate(extraction.get("data"))
-        result = calculate_route(request)
-
-        result_text = (
-            "AeroFreight routing completed successfully.\n\n"
-            f"Selected mode: {result.selected_mode}\n"
-            f"Route: {' → '.join(result.optimal_route_nodes)}\n"
-            f"Countries visited: {', '.join(result.countries_visited)}\n\n"
-            "Cost breakdown:\n"
-            f"- Freight: ${result.freight_cost_usd:,.2f}\n"
-            f"- Inland trucking: ${result.inland_trucking_cost_usd:,.2f}\n"
-            f"- Tolls and route tariffs: "
-            f"${result.tolls_and_route_tariffs_usd:,.2f}\n"
-            f"- Entry tax: ${result.entry_tax_usd:,.2f}\n"
-            f"- Total landed cost: "
-            f"${result.total_landed_cost_usd:,.2f}"
-        )
-
-        await send_chat_response(
-            ctx,
-            sender,
-            result_text,
-        )
-
-    except Exception as exc:
-        ctx.logger.exception("ASI:One routing request failed")
-
-        await send_chat_response(
-            ctx,
-            sender,
-            f"I could not process the routing request: {exc}",
-        )
-
-
-@chat_protocol.on_message(ChatAcknowledgement)
-async def handle_chat_acknowledgement(
-    ctx: Context,
-    sender: str,
-    msg: ChatAcknowledgement,
-) -> None:
-    ctx.logger.debug(
-        f"Received acknowledgement from {sender} "
-        f"for message {msg.acknowledged_msg_id}"
-    )
-
-
-# Attach both protocols to the same agent.
-riya_agent.include(
-    routing_protocol,
-    publish_manifest=ENABLE_MAILBOX,
-)
-
-riya_agent.include(
-    chat_protocol,
-    publish_manifest=ENABLE_MAILBOX,
-)
-
-
-# ---------------------------------------------------------------------------
-# Startup and standalone demo
-# ---------------------------------------------------------------------------
 
 @riya_agent.on_event("startup")
 async def startup(ctx: Context) -> None:
-    mode = "Agentverse mailbox" if ENABLE_MAILBOX else "local development"
-
-    ctx.logger.info(f"Riya routing agent address: {riya_agent.address}")
-    ctx.logger.info(f"Running in {mode} mode")
-
-
-def run_demo() -> None:
-    """
-    Test the deterministic routing engine without ASI:One or Agentverse.
-    """
-
-    request = RoutingRequest(
-        shipment=ShipmentRequest(
-            origin={
-                "country": "CN",
-                "state": "Guangdong",
-                "city": "Shenzhen",
-            },
-            destination={
-                "country": "US",
-                "state": "TX",
-                "city": "Austin",
-            },
-            items=[
-                Item(
-                    name="Electronics",
-                    quantity=10,
-                    category="electronics",
-                )
-            ],
-            total_weight_kg=800,
-            total_volume_cbm=4.2,
-            timeframe="COST",
-            declared_value_usd=5000,
-        ),
-        econ=EconData(
-            transport_preference="EITHER",
-            is_high_value=True,
-            is_luxury=False,
-            base_entry_tax_usd=350,
-        ),
-    )
-
-    result = calculate_route(request)
-    print(result.model_dump_json(indent=2))
+    ctx.logger.info(f"Riya agent address: {riya_agent.address}")
+    ctx.logger.info(f"AIR sub-agent address: {air_agent.address}")
+    ctx.logger.info(f"SHIP sub-agent address: {ship_agent.address}")
 
 
 if __name__ == "__main__":
-    if "--demo" in sys.argv:
-        run_demo()
-    else:
-        riya_agent.run()
+    riya_agent.run()
