@@ -13,3 +13,12 @@ aerofreight.db
 # Environment variables
 .env
 **/.env
+
+# Python environments and caches
+venv/
+**/__pycache__/
+*.pyc
+
+# Local Step 3 starter files
+step3_riya/_starter/
+step3_riya/*.zip
