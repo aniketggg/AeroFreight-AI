@@ -78,6 +78,20 @@ def redact_sensitive_text(text: str) -> str:
     return redacted
 
 
+def redact_request_payment_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of a RequestPayment dump with Stripe secrets redacted."""
+    redacted = json.loads(json.dumps(payload, default=str))
+    metadata = redacted.get("metadata")
+    if isinstance(metadata, dict):
+        stripe = metadata.get("stripe")
+        if isinstance(stripe, dict):
+            if stripe.get("client_secret"):
+                stripe["client_secret"] = "<redacted>"
+            if stripe.get("publishable_key"):
+                stripe["publishable_key"] = "<redacted>"
+    return redacted
+
+
 def payment_trace(
     logger: Any | None,
     event: str,

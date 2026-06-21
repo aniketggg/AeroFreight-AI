@@ -47,6 +47,7 @@ from orchestrator.payment_trace import (
     log_payment_protocol_registration,
     normalize_fetch_checkout_metadata,
     payment_trace,
+    redact_request_payment_payload,
     summarize_checkout,
     summarize_request_payment_dump,
     summarize_send_result,
@@ -274,19 +275,24 @@ async def _send_orchestrator_request_payment(
         )
         # #endregion
 
-    request = build_orchestrator_request_payment(
+    request_payment = build_orchestrator_request_payment(
         recipient=str(ctx.agent.address),
         session_id=session_id,
         fee_usd=fee_usd,
         checkout=normalized_checkout,
     )
-    dumped = request.model_dump()
+    payload_dump = request_payment.model_dump()
+    print(
+        f"PAYMENT_TRACE Payload: "
+        f"{redact_request_payment_payload(payload_dump)}"
+    )
+    dumped = payload_dump
     dump_summary = summarize_request_payment_dump(dumped)
     payment_trace(
         ctx.logger,
         "orchestrator.request_payment.built",
         session_id=session_id,
-        request_model_class=type(request).__name__,
+        request_model_class=type(request_payment).__name__,
         destination_user_address=user_address,
         recipient_address=dump_summary["recipient"],
         accepted_funds_count=dump_summary["accepted_funds_count"],
@@ -329,14 +335,15 @@ async def _send_orchestrator_request_payment(
         message="dispatching RequestPayment via ctx.send from chat handler",
         data={
             "destination": user_address[:16] + "…",
-            "request_model": type(request).__name__,
+            "request_model": type(request_payment).__name__,
         },
         always=True,
     )
     # #endregion
 
     try:
-        send_result = await ctx.send(user_address, request)
+        send_result = await ctx.send(user_address, request_payment)
+        print(f"PAYMENT_TRACE Delivery Status: {send_result}")
     except Exception as exc:
         payment_trace(
             ctx.logger,
