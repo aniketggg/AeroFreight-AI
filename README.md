@@ -1,135 +1,102 @@
 # AeroFreight AI
 
-AeroFreight AI is an autonomous multi-agent freight-forwarding system built with Fetch.ai uAgents. A central **Orchestrator** collects shipment details from natural language, coordinates teammate agents, presents a quote, and executes payment only after explicit user confirmation.
+**AeroFreight AI** is an autonomous, multi-agent logistics orchestration platform built on the [Fetch.ai uAgents framework](https://fetch.ai/). By utilizing a swarm of specialized agents governed by strict Pydantic data contracts, the system automates the end-to-end logistics lifecycle: from intent parsing and multi-modal routing to automated tax estimation, detailed invoice generation, and secure financial settlement.
 
-## Current local architecture
+---
 
-```text
-User message (CLI or Agent Chat Protocol)
-  → ConversationController
-  → ClaudeShipmentExtractor (natural-language extraction only)
-  → OrchestratorService + validation (deterministic Python)
-  → WorkflowCoordinator
-  → MockEconomistAgent / MockRoutingAgent / MockTreasuryAgent
-  → Quote → exact CONFIRM → simulated payment → COMPLETED
-```
+## Architecture Overview
 
-**Claude performs natural-language extraction only.** Deterministic Python in `orchestrator/validation.py` and `orchestrator/service.py` validates data and drives workflow transitions.
+AeroFreight AI employs a **Hub-and-Spoke** orchestration model. A centralized **Orchestrator Agent** acts as the system's "brain," managing the shipment request lifecycle by coordinating a swarm of specialized agents. Communication is strictly governed by typed Pydantic data contracts to ensure modularity and data integrity.
 
-The mock teammate agents in `orchestrator/mock_agents.py` implement the protocols in `orchestrator/agent_interfaces.py`. The actual Economist, Router, and Treasury agents will be deployed separately on Agentverse. These mock clients will later be replaced by remote Fetch.ai adapters without changing the coordinator's core logic.
+### Agent Swarm Roles
 
-**Warning:** All freight costs, tariffs, routes, documents, and payments in this repository are **simulated demo values**. They are not current market prices, legal customs assessments, or real financial transactions.
+| Agent | Primary Responsibility |
+| --- | --- |
+| **Orchestrator** | Natural language intent parsing, global state management, and agent coordination. |
+| **Economist** | Cargo classification, transport mode constraint logic, and U.S. entry tariff calculation. |
+| **Navigator** | Geospatial routing, mode-aware distance calculation, and landed cost estimation. |
+| **Treasury** | PDF invoice generation, itemized cost breakdown, and settlement execution. |
 
-## Python setup
+---
 
-Requires **Python 3.11+**. Use the project virtual environment in the parent directory:
+## Technical Stack
 
-```bash
-source ../.venv/bin/activate
-python --version
-python -m pip install -r requirements.txt
-```
+* **Runtime:** Python 3.12+
+* **Framework:** `uAgents`
+* **Data Validation:** `Pydantic` (Strict type enforcement for inter-agent communication)
+* **LLM:** Anthropic Claude 3.5 Sonnet (via Structured Outputs)
+* **Document Generation:** `reportlab` / `fpdf2`
+* **Geospatial:** `geopy` (Haversine formula implementation)
 
-## Local environment
+---
 
-```bash
-cp .env.example .env
-```
+## Getting Started
 
-Edit `.env` and add your own credentials:
+### 1. Installation
 
-```text
-ANTHROPIC_API_KEY=<your own key>
-ANTHROPIC_MODEL=claude-sonnet-4-6
-AGENT_SEED=<your own private random seed>
-AGENT_NAME=aerofreight-orchestrator
-AGENT_PORT=8001
-```
-
-Never commit a real API key or agent seed. `.env` is ignored by Git.
-
-**Never publish your `.env` file or `AGENT_SEED`.** Anyone with the seed can impersonate your agent identity.
-
-## Run tests
+Clone the repository and install dependencies:
 
 ```bash
-python -m pytest -q
+git clone https://github.com/your-org/aerofreight-ai.git
+cd aerofreight-ai
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+
 ```
 
-Unit tests use fake Anthropic clients and **do not consume Claude credits** or make real network requests.
+### 2. Configuration
 
-## Run the local CLI
+Create a `.env` file in the root directory and add your API keys:
+
+```text
+ANTHROPIC_API_KEY=your_key_here
+FETCH_AI_KEY=your_key_here
+
+```
+
+### 3. Execution
+
+Run the orchestrator to begin the autonomous logistics pipeline:
 
 ```bash
-python -m orchestrator.cli
+python orchestrator.py
+
 ```
 
-The CLI uses sender address `local-demo-user`, runs the full simulated workflow in memory, and accepts:
+---
 
-| Command       | Action                                |
-|---------------|---------------------------------------|
-| `CONFIRM`     | Execute simulated payment after quote |
-| `NEW SHIPMENT`| Start a fresh workflow                |
-| `EXIT`        | Quit                                  |
+## Data Contracts
 
-### Example shipment message
+To prevent data mismatch, all agents adhere to strict Pydantic schemas:
 
-```text
-Ship 500 kilograms of semiconductors from Shenzhen, Guangdong, China to Austin, Texas. The cargo is 3 cubic meters, worth $100,000, contains 200 units, and speed is the priority.
+```python
+# Core Data Models
+class ShipmentRequest(BaseModel):
+    origin: dict
+    destination: dict
+    items: List[Item]
+    total_weight_kg: float
+    total_volume_cbm: float
+    timeframe: Literal["SPEED", "COST"]
+    declared_value_usd: float
+
+class RouteData(BaseModel):
+    selected_mode: Literal["AIR", "SHIP"]
+    optimal_route_nodes: List[str]
+    countries_visited: List[str]
+    freight_and_toll_cost_usd: float
+    total_landed_cost_usd: float
+
 ```
 
-## Run the local uAgent (Agentverse Mailbox)
+---
 
-The uAgent exposes the same orchestrator workflow through the **Agent Chat Protocol**. The process still runs locally on your machine — Claude uses your local `.env` Anthropic key, and the Economist, Router, and Treasury remain mocks.
+## Logic & Constraints
 
-**Important:** Your terminal must remain running while the agent is active. Stopping the process disconnects the local Mailbox bridge.
+* **Mode Threshold:** We implement a **150kg Break Point**. Shipments $\le 150\text{kg}$ default to Air; shipments $>150\text{kg}$ trigger a cost-benefit comparison between Air and Sea.
+* **Routing:** The Navigator uses the Haversine formula to calculate distances across global segments, integrating infrastructure-specific data from the World Port Index (WPI) and global airport databases.
+* **Settlement:** Upon user confirmation, the Treasury Agent generates an itemized PDF invoice including freight, tolls, entry taxes, and service fees, then triggers the simulation of an atomic escrow settlement via the Fetch.ai Payment Protocol.
 
-```bash
-python -m orchestrator.agent
-```
+---
 
-The command prints:
-
-```text
-AeroFreight agent address: agent1q...
-```
-
-### Connect via Agentverse Inspector
-
-1. Start the agent with `python -m orchestrator.agent`.
-2. Open the **Inspector URL** printed in the terminal output.
-3. Select **Connect** → **Mailbox**.
-4. Keep the local agent process running.
-
-### Test with ASI:One
-
-Once Mailbox connectivity is established through the Inspector, you can chat with the agent from ASI:One using the agent's public address. Multi-turn workflows are supported — you can provide partial shipment details across messages and type `CONFIRM` when you receive a quote.
-
-The current Economist, Router, and Treasury responses are local mocks. Teammates' remote Agentverse agents will replace these mock clients in a later phase.
-
-## Project layout
-
-```text
-shared_models.py              # Inter-agent contracts
-orchestrator/
-  models.py                   # Session and partial shipment models
-  validation.py               # Deterministic validation
-  session_store.py            # In-memory session storage
-  uagents_storage.py          # ctx.storage-backed sessions
-  service.py                  # Workflow state machine
-  extractor.py                # Claude shipment extraction
-  conversation.py             # User message routing
-  agent_interfaces.py         # Protocols for teammate agents
-  mock_agents.py              # Local deterministic mock agents
-  coordinator.py              # End-to-end workflow coordinator
-  cli.py                      # Interactive local demo
-  agent.py                    # uAgent + Agent Chat Protocol
-tests/
-```
-
-## Next phase
-
-- Register and publish the orchestrator on Agentverse for persistent discovery
-- Remote Fetch.ai adapters implementing `EconomistAgentClient`, `RoutingAgentClient`, and `TreasuryAgentClient`
-- Replace mock agents with teammates' live Agentverse agents
-- Deeper ASI:One integration and production session persistence
