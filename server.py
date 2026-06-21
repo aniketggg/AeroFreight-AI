@@ -201,11 +201,16 @@ def finalize(payload: FinalizePayload) -> JSONResponse:
     )
 
     route_summary = " -> ".join(route.optimal_route_nodes)
+    invoice_line = (
+        f"Invoice: {invoice_link}"
+        if invoice_link
+        else "Invoice: Google Drive upload was skipped or unavailable."
+    )
     final_message = (
         "Payment confirmed. Total landed cost "
         f"${route.total_landed_cost_usd:,.2f} USD via {route.selected_mode} "
         f"({route_summary}). Service fee ${fee.total_fee_usd:,.2f} USD paid. "
-        f"Stripe reference: {transaction_id}."
+        f"Stripe reference: {transaction_id}. {invoice_line}"
     )
 
     pending["finalized"] = True
