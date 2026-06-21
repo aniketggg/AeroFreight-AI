@@ -104,6 +104,8 @@ def create_air_agent(*, seed: str | None = None) -> Agent:
     agent = Agent(
         name="aerofreight-air-subagent",
         seed=seed or _require_air_seed(),
+        mailbox=True,
+        publish_agent_details=True,
     )
     _register_air_handlers(agent)
     return agent

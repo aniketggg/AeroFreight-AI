@@ -104,6 +104,8 @@ def create_ship_agent(*, seed: str | None = None) -> Agent:
     agent = Agent(
         name="aerofreight-ship-subagent",
         seed=seed or _require_ship_seed(),
+        mailbox=True,
+        publish_agent_details=True,
     )
     _register_ship_handlers(agent)
     return agent

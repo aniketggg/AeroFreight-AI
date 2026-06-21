@@ -330,6 +330,8 @@ def create_routing_agent(
     agent = Agent(
         name="aerofreight-riya-routing",
         seed=seed,
+        mailbox=True,
+        publish_agent_details=True,
     )
     _register_routing_handlers(agent, air_agent_address, ship_agent_address)
     return agent

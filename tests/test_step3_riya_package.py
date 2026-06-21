@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import sys
 
@@ -214,3 +215,112 @@ def test_local_bureau_demo_does_not_run_on_import():
 
     assert hasattr(module, "main")
     assert callable(module.main)
+
+
+TEST_AIR_SEED = "test-air-mailbox-seed-only"
+TEST_SHIP_SEED = "test-ship-mailbox-seed-only"
+TEST_ROUTER_SEED = "test-router-mailbox-seed-only"
+TEST_AIR_ADDRESS = "agent1qtestair000000000000000000000000000000000000000000000000"
+TEST_SHIP_ADDRESS = "agent1qtestship000000000000000000000000000000000000000000000000"
+
+
+def _ensure_event_loop() -> None:
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("event loop is closed")
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+
+def test_air_agent_factory_uses_mailbox_mode():
+    _ensure_event_loop()
+    from step3_riya.air_agent import air_quote_protocol, create_air_agent
+
+    agent = create_air_agent(seed=TEST_AIR_SEED)
+
+    assert agent.name == "aerofreight-air-subagent"
+    assert agent._use_mailbox is True
+    assert agent.mailbox_client is not None
+    assert air_quote_protocol.digest in agent.protocols
+
+
+def test_ship_agent_factory_uses_mailbox_mode():
+    _ensure_event_loop()
+    from step3_riya.ship_agent import create_ship_agent, ship_quote_protocol
+
+    agent = create_ship_agent(seed=TEST_SHIP_SEED)
+
+    assert agent.name == "aerofreight-ship-subagent"
+    assert agent._use_mailbox is True
+    assert agent.mailbox_client is not None
+    assert ship_quote_protocol.digest in agent.protocols
+
+
+def test_routing_agent_factory_uses_mailbox_mode():
+    _ensure_event_loop()
+    from step3_riya.agent import create_routing_agent, routing_protocol
+
+    agent = create_routing_agent(
+        seed=TEST_ROUTER_SEED,
+        air_agent_address=TEST_AIR_ADDRESS,
+        ship_agent_address=TEST_SHIP_ADDRESS,
+    )
+
+    assert agent.name == "aerofreight-riya-routing"
+    assert agent._use_mailbox is True
+    assert agent.mailbox_client is not None
+    assert routing_protocol.digest in agent.protocols
+
+
+def test_mailbox_agents_do_not_require_explicit_port_configuration():
+    _ensure_event_loop()
+    from uagents_core.config import AgentverseConfig
+
+    from step3_riya.agent import create_routing_agent
+    from step3_riya.air_agent import create_air_agent
+    from step3_riya.ship_agent import create_ship_agent
+
+    mailbox_url = AgentverseConfig().mailbox_endpoint
+
+    air = create_air_agent(seed=TEST_AIR_SEED)
+    ship = create_ship_agent(seed=TEST_SHIP_SEED)
+    router = create_routing_agent(
+        seed=TEST_ROUTER_SEED,
+        air_agent_address=TEST_AIR_ADDRESS,
+        ship_agent_address=TEST_SHIP_ADDRESS,
+    )
+
+    for agent in (air, ship, router):
+        assert agent._use_mailbox is True
+        assert len(agent._endpoints) == 1
+        assert agent._endpoints[0].url == mailbox_url
+        assert "127.0.0.1" not in agent._endpoints[0].url
+
+
+def test_same_seed_produces_same_deterministic_address():
+    _ensure_event_loop()
+    from step3_riya.air_agent import create_air_agent
+
+    first = create_air_agent(seed=TEST_AIR_SEED)
+    second = create_air_agent(seed=TEST_AIR_SEED)
+
+    assert first.address == second.address
+
+
+def test_routing_agent_preserves_deterministic_address_for_same_seed():
+    _ensure_event_loop()
+    from step3_riya.agent import create_routing_agent
+
+    first = create_routing_agent(
+        seed=TEST_ROUTER_SEED,
+        air_agent_address=TEST_AIR_ADDRESS,
+        ship_agent_address=TEST_SHIP_ADDRESS,
+    )
+    second = create_routing_agent(
+        seed=TEST_ROUTER_SEED,
+        air_agent_address=TEST_AIR_ADDRESS,
+        ship_agent_address=TEST_SHIP_ADDRESS,
+    )
+
+    assert first.address == second.address
