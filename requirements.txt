@@ -3,3 +3,10 @@ pydantic>=2,<3
 python-dotenv
 pytest>=8,<9
 uagents==0.25.2
+fastapi
+uvicorn
+stripe
+reportlab
+# Optional, only needed if GOOGLE_* Drive env vars are set for invoice upload:
+# google-api-python-client
+# google-auth-oauthlib
