@@ -1,23 +1,24 @@
-.venv/
-__pycache__/
-*.pyc
-.env
-.DS_Store
-*.log
-.uagents/
-# On-chain platform wallet private key — never commit
-draft/data/platform_wallet.key
-*.key
-aerofreight.db
-
-# Environment variables
 .env
 **/.env
 
-# Python environments and caches
+.venv/
 venv/
+
+__pycache__/
 **/__pycache__/
+.pytest_cache/
 *.pyc
+.DS_Store
+*.log
+
+.uagents/
+agent*_data.json
+
+# On-chain platform wallet private key — never commit
+draft/data/platform_wallet.key
+*.key
+
+aerofreight.db
 
 # Local Step 3 starter files
 step3_riya/_starter/
