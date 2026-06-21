@@ -1,0 +1,961 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AeroFreight AI — Shipment Intake</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<!-- "Gotham Rounded" is a commercial Hoefler&Co font (no free webfont). It is used
+     first in the stack for anyone who has it licensed/installed; Nunito is the
+     closest free rounded-geometric fallback loaded here for everyone else. -->
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800;900&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<script src="https://js.stripe.com/v3/"></script>
+<style>
+/* ============================================================ *
+ *  AeroFreight AI — Shipment Intake
+ *  Sleek dark-glass intake form composing a ShipmentRequest.
+ * ============================================================ */
+
+:root{
+  --font:      "Gotham Rounded", "GothamRounded", "Gotham Rounded A", "Gotham Rounded B", "Nunito", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "DM Mono", ui-monospace, "SF Mono", monospace;
+
+  --bg:        #0a1020;
+  --bg-2:      #0f1830;
+  --surface:   rgba(255,255,255,.026);
+  --surface-2: rgba(255,255,255,.045);
+  --line:      rgba(255,255,255,.075);
+  --line-2:    rgba(255,255,255,.14);
+
+  --text:      #eef3fb;
+  --dim:       #93a2bd;
+  --faint:     #5c6a86;
+
+  --accent:    #7db4ff;     /* pastel sky blue */
+  --accent-2:  #aed4ff;
+  --accent-dp: #4f86d6;
+  --glow:      rgba(125,180,255,.20);
+
+  --mint:      #86e2dd;     /* pastel aqua — COST signal */
+  --mint-dp:   #3f9aa6;
+  --mint-glow: rgba(134,226,221,.18);
+
+  --r:    16px;
+  --r-sm: 11px;
+  --ease: cubic-bezier(.22,.61,.36,1);
+  --spring: cubic-bezier(.34,1.42,.5,1);
+  --shadow: 0 28px 70px -34px rgba(0,0,0,.85), 0 2px 8px -3px rgba(0,0,0,.6);
+}
+
+*{ box-sizing:border-box; margin:0; padding:0; }
+html{ -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
+body{
+  font-family:var(--font);
+  background:var(--bg); color:var(--text);
+  min-height:100vh; position:relative; overflow-x:hidden;
+  line-height:1.5; letter-spacing:-.01em;
+}
+
+/* ---------------- Ambient atmosphere (soft, clean) ----------- */
+.atmos{ position:fixed; inset:0; z-index:0; pointer-events:none; overflow:hidden; }
+.atmos .blob{ position:absolute; border-radius:50%; filter:blur(80px); opacity:.5; }
+.atmos .b1{ width:60vw; height:60vw; left:-12vw; top:-22vw; background:radial-gradient(circle,rgba(125,180,255,.20),transparent 65%); animation:drift1 24s var(--ease) infinite alternate; }
+.atmos .b2{ width:52vw; height:52vw; right:-14vw; bottom:-20vw; background:radial-gradient(circle,rgba(134,226,221,.14),transparent 65%); animation:drift2 28s var(--ease) infinite alternate; }
+.atmos .b3{ width:40vw; height:40vw; left:40vw; top:30vh; background:radial-gradient(circle,rgba(150,140,255,.10),transparent 65%); animation:drift1 32s var(--ease) infinite alternate-reverse; }
+@keyframes drift1{ to{ transform:translate(6vw,5vw) scale(1.12); } }
+@keyframes drift2{ to{ transform:translate(-5vw,-4vw) scale(1.08); } }
+.atmos .vig{ position:absolute; inset:0; background:radial-gradient(120% 80% at 50% -10%, transparent 50%, rgba(0,0,0,.55) 100%); }
+.grain{ position:fixed; inset:0; z-index:60; pointer-events:none; opacity:.022; mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+
+/* ------------------------- Shell ----------------------------- */
+.shell{ position:relative; z-index:1; max-width:1220px; margin:0 auto; padding:34px 32px 90px; }
+
+/* ------------------------- Header ---------------------------- */
+header{ display:flex; align-items:center; justify-content:space-between; gap:24px;
+  opacity:0; animation:rise .8s var(--ease) .05s forwards; }
+.brand{ display:flex; align-items:center; gap:15px; }
+.aperture{ width:42px; height:42px; flex:none; position:relative; border-radius:13px;
+  background:linear-gradient(145deg, rgba(125,180,255,.22), rgba(125,180,255,.04));
+  border:1px solid rgba(125,180,255,.34); display:grid; place-items:center;
+  box-shadow:0 0 22px -4px var(--glow), inset 0 1px 0 rgba(255,255,255,.14); }
+.aperture::before{ content:""; width:16px; height:16px; border-radius:50%;
+  border:2px solid var(--accent); border-right-color:transparent; border-bottom-color:transparent;
+  transform:rotate(45deg); box-shadow:0 0 12px var(--glow); }
+.wordmark .name{ font-weight:800; font-size:19px; letter-spacing:-.02em; line-height:1; }
+.wordmark .name b{ color:var(--accent); font-weight:800; }
+.wordmark .sub{ font-size:11px; color:var(--dim); letter-spacing:.16em; text-transform:uppercase; margin-top:4px; font-weight:500; }
+.status{ display:flex; align-items:center; gap:18px; }
+.pill{ display:flex; align-items:center; gap:8px; padding:8px 14px; border-radius:100px;
+  background:var(--surface); border:1px solid var(--line); font-size:11.5px; color:var(--dim); letter-spacing:.04em; font-weight:500; }
+.pill .dot{ width:7px; height:7px; border-radius:50%; background:var(--mint); box-shadow:0 0 10px var(--mint); animation:pulse 2.6s ease-in-out infinite; }
+@keyframes pulse{ 0%,100%{ opacity:1; transform:scale(1);} 50%{ opacity:.5; transform:scale(.82);} }
+.clk{ font-family:var(--font-mono); font-size:13px; color:var(--text); letter-spacing:.08em; }
+@media (max-width:680px){ .clk{ display:none; } }
+
+/* ------------------------- Stepper --------------------------- */
+.flightpath{ position:relative; margin:38px 0 30px; opacity:0; animation:rise .8s var(--ease) .14s forwards; }
+.flightpath .track{ position:absolute; left:6%; right:6%; top:18px; height:2px; background:var(--line); border-radius:2px; }
+.flightpath .lit{ position:absolute; left:6%; top:18px; height:2px; border-radius:2px;
+  background:linear-gradient(90deg,var(--accent-dp),var(--accent)); box-shadow:0 0 14px var(--glow); transition:width .6s var(--ease); }
+.waypoints{ position:relative; display:grid; grid-template-columns:repeat(4,1fr); }
+.wp{ display:flex; flex-direction:column; align-items:center; gap:12px; background:0; border:0; cursor:pointer; color:inherit; font-family:inherit; }
+.wp .node{ width:38px; height:38px; border-radius:12px; display:grid; place-items:center;
+  background:var(--bg-2); border:1px solid var(--line-2); color:var(--dim);
+  font-weight:700; font-size:14px; transition:.45s var(--spring); position:relative; }
+.wp .label{ font-size:11px; letter-spacing:.12em; color:var(--dim); text-transform:uppercase; font-weight:600; transition:.4s; }
+.wp[data-state="done"] .node{ border-color:var(--mint-dp); color:var(--mint); background:rgba(134,226,221,.08); }
+.wp[data-state="done"] .node span{ display:none; }
+.wp[data-state="done"] .node::after{ content:"✓"; font-size:15px; }
+.wp[data-state="active"] .node{ border-color:var(--accent); color:var(--bg); background:var(--accent);
+  box-shadow:0 0 0 4px var(--glow), 0 8px 22px -8px var(--glow); transform:scale(1.08); }
+.wp[data-state="active"] .label{ color:var(--text); }
+
+/* -------------------------- Layout --------------------------- */
+.deck{ display:grid; grid-template-columns:1.05fr .95fr; gap:32px; align-items:start; }
+.panel{ background:linear-gradient(180deg, var(--surface-2), var(--surface));
+  border:1px solid var(--line); border-radius:var(--r); padding:34px 34px 28px; position:relative;
+  box-shadow:var(--shadow); backdrop-filter:blur(20px) saturate(1.2); -webkit-backdrop-filter:blur(20px) saturate(1.2);
+  opacity:0; animation:rise .8s var(--ease) .22s forwards; }
+.panel::before{ content:""; position:absolute; inset:0 0 auto 0; height:1px; border-radius:var(--r) var(--r) 0 0;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.18),transparent); }
+
+.step-head{ display:flex; align-items:center; gap:12px; }
+.step-head .idx{ font-family:var(--font-mono); font-size:12px; color:var(--accent); letter-spacing:.1em; padding-top:3px; }
+.step-head h2{ font-family:var(--font); font-weight:800; font-size:40px; letter-spacing:.005em; text-transform:uppercase; line-height:.95; }
+.step-sub{ font-size:13.5px; color:var(--dim); margin:11px 0 26px; max-width:46ch; }
+
+.steps{ position:relative; }
+.stage{ display:none; }
+.stage.on{ display:block; animation:swap .55s var(--ease); }
+@keyframes swap{ from{ opacity:0; transform:translateY(10px); } to{ opacity:1; transform:none; } }
+
+/* -------------------------- Fields --------------------------- */
+.grp-label{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim); font-weight:600;
+  display:flex; align-items:center; gap:10px; margin:22px 0 13px; }
+.grp-label::before{ content:""; width:5px; height:5px; border-radius:50%; background:var(--accent); box-shadow:0 0 8px var(--glow); }
+.grp-label .n{ margin-left:auto; color:var(--faint); font-family:var(--font-mono); font-size:10px; letter-spacing:.1em; }
+
+.row{ display:grid; gap:13px; }
+.row.r3{ grid-template-columns:.75fr 1fr 1.15fr; }
+.row.r2{ grid-template-columns:1fr 1fr; }
+.field{ position:relative; }
+.field label{ display:block; font-size:11px; letter-spacing:.04em; color:var(--dim); margin-bottom:7px; font-weight:500; }
+.field input, .field select{ width:100%; background:var(--surface); color:var(--text);
+  border:1px solid var(--line); border-radius:var(--r-sm); padding:13px 14px;
+  font-family:inherit; font-size:14.5px; transition:.25s var(--ease); outline:none; font-weight:500; }
+.field input::placeholder{ color:#454b59; font-weight:400; }
+.field input:focus, .field select:focus{ border-color:var(--accent);
+  background:rgba(125,180,255,.05); box-shadow:0 0 0 4px var(--glow); }
+.field.bad input, .field.bad select{ border-color:#ef8f8a; box-shadow:0 0 0 4px rgba(239,143,138,.15); }
+.field .unit{ position:absolute; right:13px; bottom:13px; font-size:11px; color:var(--faint); pointer-events:none; font-family:var(--font-mono); letter-spacing:.06em; }
+.field .pre-sym{ position:absolute; left:14px; bottom:13px; font-size:14.5px; color:var(--accent-2); pointer-events:none; font-weight:600; }
+.field.pre input{ padding-left:27px; }
+select{ appearance:none; cursor:pointer;
+  background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),linear-gradient(135deg,var(--dim) 50%,transparent 50%);
+  background-position:calc(100% - 17px) 19px,calc(100% - 12px) 19px; background-size:5px 5px; background-repeat:no-repeat; }
+select option{ background:var(--bg-2); color:var(--text); }
+
+.gc{ display:flex; align-items:center; gap:13px; margin:20px 2px 4px; color:var(--faint); font-size:11px; letter-spacing:.14em; font-weight:600; }
+.gc .line{ flex:1; height:1px; background:var(--line-2); position:relative; }
+.gc .line::after{ content:""; position:absolute; left:0; top:50%; width:6px; height:6px; margin-top:-3px; border-radius:50%;
+  background:var(--accent); box-shadow:0 0 10px var(--glow); animation:fly 5.5s var(--ease) infinite; }
+@keyframes fly{ 0%{ left:0; opacity:0;} 12%{opacity:1;} 88%{opacity:1;} 100%{ left:100%; opacity:0;} }
+
+/* --------------------------- Cargo --------------------------- */
+.items{ display:flex; flex-direction:column; gap:12px; }
+.item{ display:grid; grid-template-columns:1.4fr .5fr .8fr 1fr 40px; gap:12px; align-items:end;
+  padding:16px 15px 15px; border:1px solid var(--line); border-radius:13px; background:var(--surface);
+  position:relative; animation:dropin .45s var(--spring); }
+@keyframes dropin{ from{ opacity:0; transform:translateY(-10px) scale(.98);} to{ opacity:1; transform:none;} }
+.item.out{ animation:dropout .32s var(--ease) forwards; }
+@keyframes dropout{ to{ opacity:0; transform:translateX(24px); height:0; padding-top:0; padding-bottom:0; margin-bottom:-12px;} }
+.item .tag{ position:absolute; top:-8px; left:14px; font-size:9.5px; letter-spacing:.14em; color:var(--faint);
+  font-family:var(--font-mono); background:var(--bg-2); padding:1px 8px; border-radius:100px; border:1px solid var(--line); }
+.kill{ width:40px; height:46px; border:1px solid var(--line); background:transparent; color:var(--dim);
+  border-radius:10px; cursor:pointer; font-size:16px; transition:.2s; }
+.kill:hover{ border-color:#ef8f8a; color:#ef8f8a; background:rgba(239,143,138,.08); }
+.additem{ margin-top:14px; width:100%; padding:14px; cursor:pointer; background:transparent; color:var(--accent-2);
+  border:1px dashed rgba(125,180,255,.4); border-radius:13px; font-family:inherit; font-weight:600; font-size:13px;
+  letter-spacing:.04em; transition:.25s; }
+.additem:hover{ background:rgba(125,180,255,.07); border-color:var(--accent); border-style:solid; }
+.tally{ display:flex; gap:24px; margin-top:18px; font-size:12px; letter-spacing:.06em; color:var(--dim); font-weight:500; }
+.tally b{ color:var(--accent); font-weight:700; font-family:var(--font); font-size:17px; margin-right:2px; }
+
+/* --------------------------- Specs --------------------------- */
+.gauge .big{ font-family:var(--font); font-weight:700; font-size:34px; letter-spacing:.01em; }
+.gauge .big small{ font-size:13px; color:var(--dim); font-weight:600; letter-spacing:.1em; }
+input[type=range]{ -webkit-appearance:none; appearance:none; width:100%; height:4px; background:var(--line-2); border-radius:4px; margin-top:16px; outline:none; }
+input[type=range]::-webkit-slider-thumb{ -webkit-appearance:none; width:20px; height:20px; border-radius:50%; cursor:pointer;
+  background:radial-gradient(circle at 35% 35%, var(--accent-2), var(--accent)); box-shadow:0 0 0 4px var(--glow), 0 2px 6px rgba(0,0,0,.5); }
+input[type=range]::-moz-range-thumb{ width:20px; height:20px; border:0; border-radius:50%; background:var(--accent); box-shadow:0 0 0 4px var(--glow); cursor:pointer; }
+.density{ margin-top:20px; padding:14px 16px; border:1px solid var(--line); border-radius:13px; background:rgba(134,226,221,.05);
+  font-size:12px; letter-spacing:.04em; color:var(--dim); display:flex; justify-content:space-between; align-items:center; font-weight:500; }
+.density b{ color:var(--mint); font-family:var(--font); font-size:17px; letter-spacing:.02em; }
+
+/* -------------------------- Priority ------------------------- */
+.throttle{ display:grid; grid-template-columns:1fr 1fr; border:1px solid var(--line); border-radius:14px; overflow:hidden; position:relative; background:var(--surface); }
+.throttle .knob{ position:absolute; top:0; bottom:0; left:0; width:50%; z-index:0; transition:.45s var(--spring);
+  background:linear-gradient(180deg, rgba(125,180,255,.16), rgba(125,180,255,.04)); border-bottom:2px solid var(--accent); }
+.throttle[data-mode="COST"] .knob{ left:50%; border-bottom-color:var(--mint);
+  background:linear-gradient(180deg, rgba(134,226,221,.16), rgba(134,226,221,.04)); }
+.opt{ position:relative; z-index:1; padding:22px 16px; cursor:pointer; text-align:left; background:0; border:0; font-family:inherit; color:inherit; }
+.opt .k{ font-family:var(--font); font-weight:700; font-size:24px; color:var(--dim); transition:.3s; letter-spacing:.01em; }
+.opt .d{ font-size:11.5px; color:var(--faint); margin-top:7px; line-height:1.55; }
+.opt .m{ font-size:10px; letter-spacing:.1em; text-transform:uppercase; margin-top:10px; color:var(--faint); font-weight:600; }
+.throttle[data-mode="SPEED"] .opt.speed .k{ color:var(--accent); }
+.throttle[data-mode="COST"]  .opt.cost  .k{ color:var(--mint); }
+
+.review{ margin-top:24px; border-top:1px solid var(--line); padding-top:20px; }
+.review h3{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim); margin-bottom:15px; font-weight:600; }
+.rgrid{ display:grid; grid-template-columns:1fr 1fr; gap:12px 26px; font-size:13px; }
+.rgrid .li{ display:flex; justify-content:space-between; gap:12px; padding-bottom:10px; border-bottom:1px solid var(--line); }
+.rgrid .li span{ color:var(--dim); }
+.rgrid .li b{ color:var(--text); font-weight:600; text-align:right; }
+
+/* ------------------------ Agent result ------------------------ */
+.result{ margin-top:24px; border-top:1px solid var(--line); padding-top:20px; display:none; }
+.result.on{ display:block; }
+.result h3{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim); margin-bottom:15px; font-weight:600; }
+.result .note{ font-size:12px; color:var(--faint); margin-top:10px; line-height:1.6; }
+.result .final{ font-size:13.5px; color:var(--text); line-height:1.7; }
+.result .invoice-link{ display:inline-block; margin-top:10px; color:var(--mint); font-weight:700; text-decoration:none; }
+.result .invoice-link:hover{ text-decoration:underline; }
+.result .spinner{ display:inline-block; width:13px; height:13px; border-radius:50%; border:2px solid var(--line-2);
+  border-top-color:var(--mint); animation:spin .8s linear infinite; vertical-align:-2px; margin-right:8px; }
+@keyframes spin{ to{ transform:rotate(360deg); } }
+
+/* ------------------------ Payment modal ------------------------ */
+.modal-backdrop{ position:fixed; inset:0; background:rgba(5,8,18,.72); backdrop-filter:blur(4px);
+  display:none; align-items:center; justify-content:center; z-index:1000; padding:24px; }
+.modal-backdrop.on{ display:flex; }
+.modal-card{ background:var(--bg-2); border:1px solid var(--line); border-radius:18px; width:min(560px,100%);
+  max-height:88vh; overflow:auto; padding:26px; box-shadow:0 30px 60px -20px rgba(0,0,0,.6); }
+.modal-card h3{ font-size:15px; font-weight:800; margin-bottom:4px; }
+.modal-card .sub{ font-size:12px; color:var(--dim); margin-bottom:18px; }
+#checkout-element{ min-height:320px; }
+.modal-close{ float:right; background:transparent; border:1px solid var(--line); color:var(--dim); border-radius:10px;
+  width:30px; height:30px; cursor:pointer; font-size:14px; }
+.modal-close:hover{ color:var(--text); border-color:var(--accent); }
+
+/* ---------------------------- Nav ---------------------------- */
+.nav{ display:flex; justify-content:space-between; align-items:center; gap:14px; margin-top:32px; }
+.btn{ font-family:inherit; font-weight:700; letter-spacing:.01em; cursor:pointer; border-radius:12px;
+  transition:.25s var(--ease); border:1px solid var(--line); font-size:14.5px; }
+.btn.ghost{ background:transparent; color:var(--dim); padding:13px 22px; }
+.btn.ghost:hover{ color:var(--text); background:var(--surface-2); }
+.btn.ghost:disabled{ opacity:.3; cursor:not-allowed; }
+.btn.go{ background:linear-gradient(180deg,var(--accent-2),var(--accent)); color:#0a1730; border-color:var(--accent-dp);
+  padding:14px 28px; box-shadow:0 12px 30px -12px var(--glow), inset 0 1px 0 rgba(255,255,255,.3); }
+.btn.go:hover{ transform:translateY(-2px); box-shadow:0 18px 38px -14px var(--glow); }
+.btn.go .ar{ margin-left:8px; display:inline-block; transition:.25s; }
+.btn.go:hover .ar{ transform:translateX(4px); }
+.btn.dispatch{ background:linear-gradient(180deg, rgba(134,226,221,.14), rgba(134,226,221,.04)); color:var(--mint);
+  border:1px solid var(--mint-dp); padding:14px 28px; box-shadow:0 0 28px -12px var(--mint-glow); }
+.btn.dispatch:hover{ transform:translateY(-2px); background:rgba(134,226,221,.16); border-color:var(--mint); }
+
+/* ==================== Digital boarding pass =================== */
+.awb-wrap{ position:sticky; top:26px; opacity:0; animation:rise .9s var(--ease) .32s forwards; }
+.awb{ position:relative; border-radius:20px; padding:26px 26px 22px;
+  background:linear-gradient(165deg, rgba(30,46,80,.92), rgba(15,25,48,.96));
+  border:1px solid var(--line-2); box-shadow:var(--shadow), inset 0 1px 0 rgba(255,255,255,.07);
+  backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px);
+  /* ticket notches cut at the tear line */
+  --tear: 118px;
+  -webkit-mask:
+     radial-gradient(circle 13px at left  -1px bottom var(--tear), transparent 99%, #000 100%),
+     radial-gradient(circle 13px at right -1px bottom var(--tear), transparent 99%, #000 100%);
+  -webkit-mask-composite: source-in;
+          mask:
+     radial-gradient(circle 13px at left  -1px bottom var(--tear), transparent 99%, #000 100%),
+     radial-gradient(circle 13px at right -1px bottom var(--tear), transparent 99%, #000 100%);
+          mask-composite: intersect;
+}
+.awb-head{ display:flex; justify-content:space-between; align-items:flex-start; }
+.awb-head .o{ font-family:var(--font); font-weight:700; font-size:21px; letter-spacing:.04em; line-height:1; }
+.awb-head .o b{ color:var(--accent); }
+.awb-head .s{ font-size:10px; letter-spacing:.16em; color:var(--faint); margin-top:6px; text-transform:uppercase; font-weight:600; }
+.awb-no{ text-align:right; }
+.awb-no .lab{ font-size:9px; letter-spacing:.14em; color:var(--faint); text-transform:uppercase; font-weight:600; }
+.awb-no .num{ font-family:var(--font-mono); font-weight:500; font-size:16px; letter-spacing:.02em; color:var(--text); margin-top:3px; }
+
+/* split-flap board */
+.board{ margin:20px 0 6px; background:linear-gradient(180deg,#0b1428,#070d1c); border:1px solid var(--line);
+  border-radius:13px; padding:16px 16px 13px; box-shadow:inset 0 2px 14px rgba(0,0,0,.6); }
+.board .lane{ display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.flaps{ display:flex; gap:4px; }
+.flap{ width:30px; height:42px; display:grid; place-items:center; border-radius:5px;
+  font-family:var(--font); font-weight:800; font-size:25px; color:var(--accent-2);
+  background:linear-gradient(180deg,#28324f 0 49%, #151e36 51% 100%);
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.5), 0 1px 0 rgba(255,255,255,.04); position:relative; overflow:hidden; }
+.flap::after{ content:""; position:absolute; left:0; right:0; top:50%; height:1px; background:rgba(0,0,0,.55); }
+.flap.spin{ animation:flip .1s var(--ease); }
+@keyframes flip{ 0%{ transform:scaleY(.45); filter:brightness(1.5);} 100%{ transform:scaleY(1);} }
+.board .arrow{ color:var(--accent); font-size:18px; opacity:.7; }
+.board .cities{ display:flex; justify-content:space-between; margin-top:11px; font-size:10px; letter-spacing:.1em; color:var(--dim); font-weight:600; }
+
+.awb-grid{ display:grid; grid-template-columns:1fr 1fr; gap:1px; margin-top:18px;
+  background:var(--line); border:1px solid var(--line); border-radius:13px; overflow:hidden; }
+.cell{ padding:12px 14px; background:rgba(13,21,40,.6); }
+.cell .l{ font-size:9.5px; letter-spacing:.12em; color:var(--faint); text-transform:uppercase; font-weight:600; }
+.cell .v{ font-family:var(--font); font-weight:700; font-size:21px; margin-top:4px; color:var(--text); letter-spacing:.01em; }
+.cell .v small{ font-size:11px; color:var(--dim); font-family:var(--font); font-weight:600; letter-spacing:.04em; }
+.cell.full{ grid-column:1/-1; }
+.cell .mani{ font-size:13px; line-height:1.7; color:var(--text); min-height:20px; margin-top:5px; font-weight:500; }
+.cell .mani em{ font-style:normal; color:var(--accent-2); font-weight:600; }
+.cell .mani .ph{ color:var(--faint); font-weight:400; }
+
+/* tear + stub */
+.tear{ margin:20px -26px 0; border-top:1.5px dashed var(--line-2); position:relative; }
+.stub{ padding:18px 0 2px; display:flex; align-items:center; justify-content:space-between; gap:16px; }
+.barcode{ flex:1; height:44px; background-image:
+   repeating-linear-gradient(90deg, var(--text) 0 2px, transparent 2px 4px, var(--text) 4px 5px, transparent 5px 9px, var(--text) 9px 11px, transparent 11px 14px);
+   opacity:.82; border-radius:2px; }
+.bc-no{ font-family:var(--font-mono); font-size:10px; letter-spacing:.2em; color:var(--faint); margin-top:7px; }
+
+/* priority chip (replaces the rubber stamp) */
+.stampmark{ flex:none; text-align:center; padding:10px 16px; border-radius:12px; line-height:1;
+  font-family:var(--font); font-weight:700; font-size:22px; letter-spacing:.04em; text-transform:uppercase;
+  color:var(--accent); background:rgba(125,180,255,.1); border:1px solid rgba(125,180,255,.42);
+  box-shadow:0 0 22px -6px var(--glow); transition:.4s var(--ease); }
+.stampmark small{ display:block; font-family:var(--font); font-size:8.5px; letter-spacing:.12em; margin-top:5px; color:var(--dim); font-weight:600; }
+.stampmark.cost{ color:var(--mint); background:rgba(134,226,221,.1); border-color:rgba(134,226,221,.42); box-shadow:0 0 22px -6px var(--mint-glow); }
+.stampmark.none{ color:var(--dim); background:rgba(170,170,180,.1); border-color:rgba(170,170,180,.42); box-shadow:0 0 22px -6px rgba(170,170,180,.35); }
+.stampmark.pulse{ animation:pop .45s var(--spring); }
+@keyframes pop{ 0%{ transform:scale(.8); opacity:.4;} 100%{ transform:scale(1); opacity:1;} }
+
+footer{ text-align:center; margin-top:58px; font-size:11px; letter-spacing:.1em; color:var(--faint); opacity:0; animation:rise .8s var(--ease) .4s forwards; }
+footer b{ color:var(--dim); font-weight:600; }
+
+@keyframes rise{ from{ opacity:0; transform:translateY(18px);} to{ opacity:1; transform:none;} }
+
+/* -------------------------- Responsive ----------------------- */
+@media (max-width:960px){
+  .deck{ grid-template-columns:1fr; }
+  .awb-wrap{ position:static; order:-1; }
+  .step-head h2{ font-size:34px; }
+}
+@media (max-width:560px){
+  .shell{ padding:22px 16px 64px; }
+  .row.r3,.row.r2{ grid-template-columns:1fr; }
+  .item{ grid-template-columns:1fr 1fr; }
+  .item .kill{ grid-column:2; justify-self:end; }
+  .wp .label{ display:none; }
+  header{ flex-wrap:wrap; gap:14px; }
+}
+@media (prefers-reduced-motion:reduce){
+  *{ animation-duration:.001ms !important; animation-iteration-count:1 !important; transition-duration:.06s !important; }
+  .atmos .blob{ animation:none; }
+}
+
+/* ============================ Views =========================== */
+.view{ display:none; }
+.view.on{ display:block; animation:swap .5s var(--ease); }
+</style>
+</head>
+<body>
+
+<div class="atmos">
+  <div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div><div class="vig"></div>
+</div>
+<div class="grain"></div>
+
+<div class="shell">
+
+  <!-- ===== Header ===== -->
+  <header>
+    <div class="brand">
+      <div class="aperture"></div>
+      <div class="wordmark">
+        <div class="name">Aero<b>Freight</b> AI</div>
+        <div class="sub" id="headsub">Shipment Intake</div>
+      </div>
+    </div>
+    <div class="status">
+      <div class="pill"><span class="dot"></span> Orchestrator swarm online</div>
+      <div class="clk" id="clk">--:--:-- Z</div>
+    </div>
+  </header>
+
+  <!-- ===== INTAKE VIEW (Step 1 → ShipmentRequest) ===== -->
+  <div id="intake" class="view on">
+
+  <!-- ===== Stepper ===== -->
+  <div class="flightpath">
+    <div class="track"></div><div class="lit" id="lit"></div>
+    <div class="waypoints" id="waypoints">
+      <button class="wp" data-step="0"><span class="node"><span>1</span></span><span class="label">Route</span></button>
+      <button class="wp" data-step="1"><span class="node"><span>2</span></span><span class="label">Cargo</span></button>
+      <button class="wp" data-step="2"><span class="node"><span>3</span></span><span class="label">Specs</span></button>
+      <button class="wp" data-step="3"><span class="node"><span>4</span></span><span class="label">Dispatch</span></button>
+    </div>
+  </div>
+
+  <!-- ===== Deck ===== -->
+  <div class="deck">
+
+    <!-- ---- Input panel ---- -->
+    <div class="panel">
+      <form id="form" class="steps" autocomplete="off">
+
+        <!-- STEP 1 — ROUTE -->
+        <section class="stage on" data-stage="0">
+          <div class="step-head"><span class="idx">01</span><h2>Route</h2></div>
+          <p class="step-sub">Where the cargo lifts from, and where it must land. The routing agent resolves the optimal lane.</p>
+
+          <div class="grp-label">Origin <span class="n">DEP</span></div>
+          <div class="row r3">
+            <div class="field"><label>Country</label><input id="o_country" list="countries" placeholder="CN" maxlength="3" /></div>
+            <div class="field"><label>State / Prov</label><input id="o_state" placeholder="Guangdong" /></div>
+            <div class="field"><label>City</label><input id="o_city" placeholder="Shenzhen" /></div>
+          </div>
+
+          <div class="gc"><span>DEP</span><span class="line"></span><span>ARR</span></div>
+
+          <div class="grp-label">Destination <span class="n">ARR</span></div>
+          <div class="row r3">
+            <div class="field"><label>Country</label><input id="d_country" list="countries" placeholder="US" maxlength="3" /></div>
+            <div class="field"><label>State / Prov</label><input id="d_state" placeholder="TX" /></div>
+            <div class="field"><label>City</label><input id="d_city" placeholder="Austin" /></div>
+          </div>
+        </section>
+
+        <!-- STEP 2 — CARGO -->
+        <section class="stage" data-stage="1">
+          <div class="step-head"><span class="idx">02</span><h2>Cargo</h2></div>
+          <p class="step-sub">Itemize the consignment. Categories feed the duty classifier and compliance form selector.</p>
+          <div class="items" id="items"></div>
+          <button type="button" class="additem" id="additem">+ Add line item</button>
+          <div class="tally">
+            <div><b id="t_lines">0</b> lines</div>
+            <div><b id="t_pieces">0</b> pieces</div>
+          </div>
+        </section>
+
+        <!-- STEP 3 — SPECS -->
+        <section class="stage" data-stage="2">
+          <div class="step-head"><span class="idx">03</span><h2>Specs</h2></div>
+          <p class="step-sub">Physical envelope and declared value. These set the transport-mode constraints and entry tax.</p>
+
+          <div class="grp-label">Gross Weight</div>
+          <div class="gauge"><div class="big"><span id="g_weight">0</span> <small>KG</small></div>
+            <input type="range" id="r_weight" min="0" max="8000" step="10" value="0" /></div>
+          <div class="field" style="margin-top:14px"><label>Exact kilograms</label><input id="weight" type="number" min="0" step="0.1" placeholder="200" /><span class="unit">KG</span></div>
+
+          <div class="grp-label">Volume</div>
+          <div class="field"><label>Total volume</label><input id="volume" type="number" min="0" step="0.1" placeholder="3.0" /><span class="unit">CBM</span></div>
+
+          <div class="grp-label">Declared Value</div>
+          <div class="field pre"><label>Customs declared value</label><span class="pre-sym">$</span><input id="value" type="number" min="0" step="1" placeholder="2800" /><span class="unit">USD</span></div>
+
+          <div class="density"><span>Estimated density</span><b id="density">— KG / CBM</b></div>
+        </section>
+
+        <!-- STEP 4 — DISPATCH -->
+        <section class="stage" data-stage="3">
+          <div class="step-head"><span class="idx">04</span><h2>Dispatch</h2></div>
+          <p class="step-sub">Set the optimization priority, confirm the manifest, and transmit to the orchestrator swarm.</p>
+
+          <div class="grp-label">Optimization Priority</div>
+          <div class="throttle" id="throttle" data-mode="SPEED">
+            <div class="knob"></div>
+            <button type="button" class="opt speed" data-mode="SPEED">
+              <div class="k">Speed</div>
+              <div class="d">Minimize transit time. Forces AIR where permitted.</div>
+              <div class="m">Time-critical</div>
+            </button>
+            <button type="button" class="opt cost" data-mode="COST">
+              <div class="k">Cost</div>
+              <div class="d">Minimize landed cost. Allows SHIP for heavy freight.</div>
+              <div class="m">Budget-critical</div>
+            </button>
+          </div>
+
+          <div class="review">
+            <h3>Manifest Review</h3>
+            <div class="rgrid" id="review"></div>
+          </div>
+
+          <div class="result" id="result">
+            <h3>Orchestrator Result</h3>
+            <div class="rgrid" id="resultGrid"></div>
+            <div id="resultNote" class="note"></div>
+          </div>
+        </section>
+
+      </form>
+
+      <!-- nav -->
+      <div class="nav">
+        <button class="btn ghost" id="back" disabled>← Back</button>
+        <button class="btn go" id="next">Continue <span class="ar">→</span></button>
+        <button class="btn dispatch" id="dispatch" style="display:none">Dispatch to Swarm →</button>
+      </div>
+    </div>
+
+    <!-- ---- Boarding-pass live preview ---- -->
+    <div class="awb-wrap">
+      <div class="awb">
+        <div class="awb-head">
+          <div><div class="o">Air <b>Waybill</b></div><div class="s">Non-negotiable · orchestrator copy</div></div>
+          <div class="awb-no"><div class="lab">AWB No.</div><div class="num" id="awbno">000-00000000</div></div>
+        </div>
+
+        <div class="board">
+          <div class="lane">
+            <div class="flaps" id="flapsO"></div>
+            <span class="arrow">→</span>
+            <div class="flaps" id="flapsD"></div>
+          </div>
+          <div class="cities"><span id="cityO">ORIGIN</span><span id="cityD">DESTINATION</span></div>
+        </div>
+
+        <div class="awb-grid">
+          <div class="cell"><div class="l">Pieces (RCP)</div><div class="v" id="awb_pieces">—</div></div>
+          <div class="cell"><div class="l">Gross Weight</div><div class="v" id="awb_weight">— <small>kg</small></div></div>
+          <div class="cell"><div class="l">Volume</div><div class="v" id="awb_volume">— <small>cbm</small></div></div>
+          <div class="cell"><div class="l">Declared Value</div><div class="v" id="awb_value">— <small>usd</small></div></div>
+          <div class="cell full"><div class="l">Nature &amp; Quantity of Goods</div><div class="mani" id="awb_goods"><span class="ph">awaiting manifest…</span></div></div>
+        </div>
+
+        <div class="tear"></div>
+        <div class="stub">
+          <div>
+            <div class="barcode"></div>
+            <div class="bc-no" id="bcno">0000 0000 0000</div>
+          </div>
+          <div class="stampmark" id="stamp">Speed<small>PRIORITY · AIR</small></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+  </div><!-- /#intake -->
+
+  <footer>AeroFreight AI · <b>ShipmentRequest</b> → Orchestrator · Economic · Routing · Compliance · Treasury</footer>
+</div>
+
+<!-- country code suggestions -->
+<datalist id="countries">
+  <option value="CN">China</option><option value="US">United States</option><option value="IN">India</option>
+  <option value="DE">Germany</option><option value="MX">Mexico</option><option value="IT">Italy</option>
+  <option value="JP">Japan</option><option value="GB">United Kingdom</option><option value="KR">South Korea</option>
+  <option value="VN">Vietnam</option><option value="NL">Netherlands</option><option value="FR">France</option>
+  <option value="BR">Brazil</option><option value="CA">Canada</option><option value="AE">UAE</option>
+</datalist>
+
+<!-- payment modal -->
+<div class="modal-backdrop" id="paymentModal">
+  <div class="modal-card">
+    <button type="button" class="modal-close" id="paymentModalClose">✕</button>
+    <h3>Settle AeroFreight Service Fee</h3>
+    <div class="sub">Complete checkout below. This unlocks your invoice and documents.</div>
+    <div id="checkout-element"></div>
+  </div>
+</div>
+
+<script>
+/* ============================================================ *
+ *  State + helpers
+ * ============================================================ */
+const $  = (s,el=document)=>el.querySelector(s);
+const $$ = (s,el=document)=>[...el.querySelectorAll(s)];
+
+const CATEGORIES = ["electronics","semiconductor","apparel","jewelry","battery",
+  "pharmaceutical","machinery","footwear","steel","furniture","toys","food","alcohol","general"];
+
+/* Unit of measure for a line item's quantity. `v` is stored/serialized;
+   `label` shows in the dropdown; UNIT_ABBR is the short manifest suffix. */
+const UNITS = [
+  {v:"count",   label:"Count (pcs)"},
+  {v:"grams",   label:"Grams (g)"},
+  {v:"kg",      label:"Kilograms (kg)"},
+  {v:"lbs",     label:"Pounds (lbs)"},
+  {v:"tonnes",  label:"Tonnes (t)"},
+  {v:"liters",  label:"Liters (L)"},
+  {v:"cartons", label:"Cartons"},
+  {v:"pallets", label:"Pallets"},
+];
+const UNIT_ABBR = {count:"",grams:"g",kg:"kg",lbs:"lbs",tonnes:"t",liters:"L",cartons:"ctn",pallets:"plt"};
+
+let step = 0;
+let items = [];               // {name, quantity, unit, category}
+let mode = "SPEED";
+const TOTAL = 4;
+
+/* live UTC clock */
+function tick(){
+  const d = new Date();
+  const p = n => String(n).padStart(2,"0");
+  $("#clk").textContent = `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} Z`;
+}
+setInterval(tick,1000); tick();
+
+/* a stable AWB number for the session */
+const AWB_PREFIX = String(Math.floor(Math.random()*899+100));
+const AWB_SERIAL = String(Math.floor(Math.random()*9e7+1e7));
+$("#awbno").textContent = `${AWB_PREFIX}-${AWB_SERIAL}`;
+$("#bcno").textContent  = `${AWB_PREFIX} ${AWB_SERIAL.slice(0,4)} ${AWB_SERIAL.slice(4)}`;
+
+/* ============================================================ *
+ *  Split-flap departure board
+ * ============================================================ */
+const GLYPHS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ";
+function buildFlaps(box,len){
+  box.innerHTML="";
+  for(let i=0;i<len;i++){ const f=document.createElement("div"); f.className="flap"; f.textContent=" "; box.appendChild(f); }
+}
+buildFlaps($("#flapsO"),3); buildFlaps($("#flapsD"),3);
+
+function setFlaps(box,text){
+  const cells=$$(".flap",box);
+  text=(text||"").toUpperCase().replace(/[^A-Z0-9 ]/g,"").padEnd(cells.length," ").slice(0,cells.length);
+  cells.forEach((cell,i)=>{
+    clearInterval(cell._t);
+    const target=text[i];
+    let ticks=5+i*2+Math.floor(Math.random()*4);
+    cell._t=setInterval(()=>{
+      if(ticks<=0){ cell.textContent=target; clearInterval(cell._t); return; }
+      cell.textContent=GLYPHS[Math.floor(Math.random()*GLYPHS.length)];
+      cell.classList.remove("spin"); void cell.offsetWidth; cell.classList.add("spin");
+      ticks--;
+    },55);
+  });
+}
+/* derive a 3-letter pseudo-code from city (or country) */
+function code(city,country){
+  const c=(city||"").trim();
+  if(c.length>=3) return c.slice(0,3);
+  if(c.length>0)  return c.padEnd(3,"·");
+  return (country||"").trim().slice(0,3).padEnd(3," ");
+}
+
+/* ============================================================ *
+ *  Cargo line items
+ * ============================================================ */
+function itemRow(it,idx){
+  const opts=CATEGORIES.map(c=>`<option value="${c}" ${c===it.category?"selected":""}>${c}</option>`).join("");
+  const uopts=UNITS.map(u=>`<option value="${u.v}" ${u.v===(it.unit||"count")?"selected":""}>${u.label}</option>`).join("");
+  const el=document.createElement("div");
+  el.className="item"; el.dataset.idx=idx;
+  el.innerHTML=`
+    <span class="tag">ITEM ${String(idx+1).padStart(2,"0")}</span>
+    <div class="field"><label>Description</label><input class="i-name" value="${it.name||""}" placeholder="semiconductor components" /></div>
+    <div class="field"><label>Qty</label><input class="i-qty" type="number" min="1" step="1" value="${it.quantity||""}" placeholder="500" /></div>
+    <div class="field"><label>Unit</label><select class="i-unit">${uopts}</select></div>
+    <div class="field"><label>Category</label><select class="i-cat">${opts}</select></div>
+    <button type="button" class="kill" title="Remove">✕</button>`;
+  $(".i-name",el).addEventListener("input",e=>{ items[idx].name=e.target.value; sync(); });
+  $(".i-qty",el).addEventListener("input",e=>{ items[idx].quantity=e.target.value; sync(); });
+  $(".i-unit",el).addEventListener("change",e=>{ items[idx].unit=e.target.value; sync(); });
+  $(".i-cat",el).addEventListener("change",e=>{ items[idx].category=e.target.value; sync(); });
+  $(".kill",el).addEventListener("click",()=>{
+    if(items.length<=1){ items[0]={name:"",quantity:"",unit:"count",category:"general"}; renderItems(); sync(); return; }
+    el.classList.add("out");
+    setTimeout(()=>{ items.splice(idx,1); renderItems(); sync(); },300);
+  });
+  return el;
+}
+function renderItems(){
+  const box=$("#items"); box.innerHTML="";
+  items.forEach((it,i)=>box.appendChild(itemRow(it,i)));
+}
+$("#additem").addEventListener("click",()=>{
+  items.push({name:"",quantity:"",unit:"count",category:"general"}); renderItems(); sync();
+  const last=$("#items").lastElementChild; $(".i-name",last)?.focus();
+});
+
+/* ============================================================ *
+ *  Specs — slider <-> number binding
+ * ============================================================ */
+const weight=$("#weight"), rweight=$("#r_weight");
+weight.addEventListener("input",()=>{ rweight.value=Math.min(8000,weight.value||0); sync(); });
+rweight.addEventListener("input",()=>{ weight.value=rweight.value; sync(); });
+$("#volume").addEventListener("input",sync);
+$("#value").addEventListener("input",sync);
+
+/* ============================================================ *
+ *  Priority throttle
+ * ============================================================ */
+$$(".throttle .opt").forEach(b=>b.addEventListener("click",()=>{
+  mode=b.dataset.mode; $("#throttle").dataset.mode=mode; sync(true);
+}));
+
+/* ============================================================ *
+ *  Route inputs
+ * ============================================================ */
+["o_country","o_state","o_city","d_country","d_state","d_city"].forEach(id=>$("#"+id).addEventListener("input",sync));
+
+/* ============================================================ *
+ *  Sync everything -> live waybill
+ * ============================================================ */
+let lastO="", lastD="";
+function val(id){ return $("#"+id).value.trim(); }
+function num(id){ const n=parseFloat($("#"+id).value); return isNaN(n)?0:n; }
+
+function sync(stamped){
+  const oc=code(val("o_city"),val("o_country")), dc=code(val("d_city"),val("d_country"));
+  if(oc!==lastO){ setFlaps($("#flapsO"),oc); lastO=oc; }
+  if(dc!==lastD){ setFlaps($("#flapsD"),dc); lastD=dc; }
+  $("#cityO").textContent=(val("o_city")||val("o_country")||"ORIGIN").toUpperCase();
+  $("#cityD").textContent=(val("d_city")||val("d_country")||"DESTINATION").toUpperCase();
+
+  const pieces=items.reduce((s,i)=>s+(parseInt(i.quantity)||0),0);
+  const lines=items.filter(i=>i.name.trim()).length;
+  $("#t_lines").textContent=lines; $("#t_pieces").textContent=pieces;
+  $("#awb_pieces").textContent=pieces||"—";
+  const named=items.filter(i=>i.name.trim());
+  $("#awb_goods").innerHTML = named.length
+    ? named.map(i=>{ const u=UNIT_ABBR[i.unit]||""; return `${i.quantity||"?"}${u?" "+u:""} × ${i.name} <em>[${i.category}]</em>`; }).join("<br>")
+    : `<span class="ph">awaiting manifest…</span>`;
+
+  const w=num("weight"), v=num("volume"), val$=num("value");
+  $("#g_weight").textContent=w?Math.round(w).toLocaleString():"0";
+  $("#awb_weight").innerHTML=(w?w.toLocaleString():"—")+` <small>kg</small>`;
+  $("#awb_volume").innerHTML=(v?v:"—")+` <small>cbm</small>`;
+  $("#awb_value").innerHTML=(val$?"$"+val$.toLocaleString():"—")+` <small>usd</small>`;
+  $("#density").textContent = (w&&v) ? `${(w/v).toFixed(1)} KG / CBM` : "— KG / CBM";
+
+  const st=$("#stamp");
+  st.classList.remove("cost","none");
+  if(mode==="SPEED"){ st.innerHTML=`Speed<small>PRIORITY · AIR</small>`; }
+  else{ st.classList.add("cost"); st.innerHTML=`Economy<small>LOWEST LANDED COST</small>`; }
+  if(stamped){ st.classList.remove("pulse"); void st.offsetWidth; st.classList.add("pulse"); }
+
+  if(step===3) renderReview();
+}
+
+function renderReview(){
+  const r=$("#review");
+  const named=items.filter(i=>i.name.trim());
+  const rows=[
+    ["Origin", [val("o_city"),val("o_state"),val("o_country")].filter(Boolean).join(", ")||"—"],
+    ["Destination", [val("d_city"),val("d_state"),val("d_country")].filter(Boolean).join(", ")||"—"],
+    ["Line items", named.length||"0"],
+    ["Total pieces", items.reduce((s,i)=>s+(parseInt(i.quantity)||0),0)||"0"],
+    ["Gross weight", num("weight")?num("weight").toLocaleString()+" kg":"—"],
+    ["Volume", num("volume")?num("volume")+" cbm":"—"],
+    ["Declared value", num("value")?"$"+num("value").toLocaleString():"—"],
+    ["Priority", mode],
+  ];
+  r.innerHTML=rows.map(([k,v])=>`<div class="li"><span>${k}</span><b>${v}</b></div>`).join("");
+}
+
+function collectShipmentPayload(){
+  const namedItems = items
+    .map((item, index) => ({
+      line_number: index + 1,
+      description: item.name.trim(),
+      quantity: parseInt(item.quantity) || 0,
+      unit: item.unit || "count",
+      category: item.category || "general",
+    }))
+    .filter(item => item.description || item.quantity > 0);
+
+  const grossWeightKg = num("weight");
+  const volumeCbm = num("volume");
+  const declaredValueUsd = num("value");
+
+  return {
+    awb_number: $("#awbno").textContent.trim(),
+    priority: mode,
+    route: {
+      origin: {
+        country: val("o_country"),
+        state: val("o_state"),
+        city: val("o_city"),
+        code: code(val("o_city"), val("o_country")),
+      },
+      destination: {
+        country: val("d_country"),
+        state: val("d_state"),
+        city: val("d_city"),
+        code: code(val("d_city"), val("d_country")),
+      },
+    },
+    cargo: {
+      line_items: namedItems,
+      total_lines: namedItems.length,
+      total_pieces: items.reduce((sum, item) => sum + (parseInt(item.quantity) || 0), 0),
+      goods_summary: namedItems.length
+        ? namedItems.map(item => `${item.quantity} ${item.unit} × ${item.description} [${item.category}]`).join("; ")
+        : "",
+    },
+    specs: {
+      gross_weight_kg: grossWeightKg,
+      volume_cbm: volumeCbm,
+      declared_value_usd: declaredValueUsd,
+      density_kg_per_cbm: grossWeightKg && volumeCbm ? Number((grossWeightKg / volumeCbm).toFixed(1)) : null,
+    },
+  };
+}
+
+function buildAgentPrompt(){
+  const payload = collectShipmentPayload();
+  return [
+    "You are the AeroFreight orchestrator. Use the shipment intake below as the complete user request.",
+    "Normalize it into a clean shipment summary and continue the workflow.",
+    "",
+    "SHIPMENT_INTAKE_JSON:",
+    JSON.stringify(payload, null, 2),
+  ].join("\n");
+}
+
+window.buildAgentPrompt = buildAgentPrompt;
+window.dispatchShipmentToAgent = dispatchShipmentToAgent;
+
+let __pollHandle = null;
+
+function showResult(html, note){
+  const r = $("#result");
+  r.classList.add("on");
+  $("#resultGrid").innerHTML = html || "";
+  $("#resultNote").innerHTML = note || "";
+}
+
+function moneyRow(label, value){
+  return `<div class="li"><span>${label}</span><b>${value}</b></div>`;
+}
+
+function renderQuote(quote){
+  const rows = [
+    moneyRow("Selected mode", quote.selected_mode),
+    moneyRow("Route", quote.route_nodes.join(" → ")),
+    moneyRow("Freight + transit", "$" + quote.freight_and_toll_cost_usd.toLocaleString(undefined,{minimumFractionDigits:2})),
+    moneyRow("Entry tax", "$" + quote.base_entry_tax_usd.toLocaleString(undefined,{minimumFractionDigits:2})),
+    moneyRow("Total landed cost", "$" + quote.total_landed_cost_usd.toLocaleString(undefined,{minimumFractionDigits:2})),
+    moneyRow("AeroFreight service fee", "$" + quote.service_fee_usd.toLocaleString(undefined,{minimumFractionDigits:2})),
+  ];
+  showResult(rows.join(""), '<span class="spinner"></span>Waiting for payment…');
+}
+
+function closePaymentModal(){
+  $("#paymentModal").classList.remove("on");
+  $("#checkout-element").innerHTML = "";
+  if (__pollHandle){ clearInterval(__pollHandle); __pollHandle = null; }
+}
+
+async function openPaymentModal(checkout, sessionId){
+  const stripe = Stripe(checkout.publishable_key);
+  $("#paymentModal").classList.add("on");
+  const embedded = await stripe.initEmbeddedCheckout({ clientSecret: checkout.client_secret });
+  embedded.mount("#checkout-element");
+
+  __pollHandle = setInterval(async () => {
+    try {
+      const res = await fetch("/api/finalize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+      const data = await res.json();
+      if (data.paid) {
+        embedded.unmount();
+        closePaymentModal();
+        const link = data.invoice_link
+          ? `<a class="invoice-link" href="${data.invoice_link}" target="_blank" rel="noopener">View invoice in Drive →</a>`
+          : "";
+        $("#resultNote").innerHTML = `<div class="final">${data.final_message}</div>${link}`;
+      }
+    } catch (e) {
+      console.error("AEROFREIGHT_FINALIZE_POLL_ERROR", e);
+    }
+  }, 2500);
+}
+
+$("#paymentModalClose").addEventListener("click", closePaymentModal);
+
+async function dispatchShipmentToAgent(){
+  if (!validate(0) || !validate(1) || !validate(2)) {
+    showStep(step);
+    return;
+  }
+
+  const payload = collectShipmentPayload();
+  window.__aerofreightLastPrompt = buildAgentPrompt();
+
+  const dispatchBtn = $("#dispatch");
+  dispatchBtn.disabled = true;
+  dispatchBtn.textContent = "Dispatching…";
+  showResult('<div class="li" style="grid-column:1/-1"><span><span class="spinner"></span>Running economist, router, and treasury agents…</span></div>', "");
+
+  try {
+    const res = await fetch("/api/dispatch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`Dispatch failed: ${res.status}`);
+    const data = await res.json();
+
+    renderQuote(data.quote);
+
+    if (data.checkout) {
+      await openPaymentModal(data.checkout, data.session_id);
+    } else {
+      $("#resultNote").textContent = "Payment is not configured on this server — quote only.";
+    }
+  } catch (err) {
+    console.error("AEROFREIGHT_DISPATCH_ERROR", err);
+    showResult("", `<span style="color:#ef8f8a">Dispatch failed: ${err.message}</span>`);
+  } finally {
+    dispatchBtn.disabled = false;
+    dispatchBtn.textContent = "Dispatch to Swarm →";
+  }
+}
+
+/* ============================================================ *
+ *  Step navigation + validation
+ * ============================================================ */
+function showStep(n){
+  step=Math.max(0,Math.min(TOTAL-1,n));
+  $$(".stage").forEach(s=>s.classList.toggle("on", +s.dataset.stage===step));
+  $$(".wp").forEach((w,i)=>w.dataset.state = i<step?"done":(i===step?"active":""));
+  $("#lit").style.width = (step/(TOTAL-1))*88 + "%";
+  $("#back").disabled = step===0;
+  $("#next").style.display = step<TOTAL-1 ? "" : "none";
+  $("#dispatch").style.display = step===TOTAL-1 ? "" : "none";
+  if(step===3) renderReview();
+  window.scrollTo({top:0,behavior:"smooth"});
+}
+
+function markBad(ids){
+  ids.forEach(id=>{ const f=$("#"+id)?.closest(".field"); if(f){ f.classList.add("bad"); setTimeout(()=>f.classList.remove("bad"),1600);} });
+}
+function validate(n){
+  if(n===0){
+    const need=["o_country","o_city","d_country","d_city"].filter(id=>!val(id));
+    if(need.length){ markBad(need); return false; }
+  }
+  if(n===1){
+    const ok=items.some(i=>i.name.trim() && (parseInt(i.quantity)||0)>0);
+    if(!ok){ $("#items").animate([{transform:"translateX(-6px)"},{transform:"translateX(6px)"},{transform:"none"}],{duration:300}); return false; }
+  }
+  if(n===2){
+    const need=["weight","volume","value"].filter(id=>num(id)<=0);
+    if(need.length){ markBad(need); return false; }
+  }
+  return true;
+}
+
+$("#next").addEventListener("click",()=>{ if(validate(step)) showStep(step+1); });
+$("#back").addEventListener("click",()=>showStep(step-1));
+$("#dispatch").addEventListener("click",async()=>{ await dispatchShipmentToAgent(); });
+$$(".wp").forEach(w=>w.addEventListener("click",()=>{
+  const t=+w.dataset.step;
+  if(t<=step){ showStep(t); return; }
+  let ok=true; for(let i=step;i<t;i++){ if(!validate(i)){ showStep(i); ok=false; break; } }
+  if(ok) showStep(t);
+}));
+
+/* ============================================================ *
+ *  Boot
+ * ============================================================ */
+items=[{name:"",quantity:"",unit:"count",category:"general"}];
+renderItems();
+showStep(0);
+sync();
+</script>
+</body>
+</html>
