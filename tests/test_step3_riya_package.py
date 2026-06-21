@@ -102,6 +102,7 @@ def test_create_routing_agent_requires_configuration(
 ):
     _clear_routing_env(monkeypatch)
     _reload_step3_modules()
+    monkeypatch.setattr("step3_riya.agent.load_dotenv", lambda *args, **kwargs: False)
 
     from step3_riya.agent import RoutingConfigurationError, create_routing_agent
 
@@ -114,6 +115,7 @@ def test_create_air_agent_requires_configuration(
 ):
     _clear_routing_env(monkeypatch)
     _reload_step3_modules()
+    monkeypatch.setattr("step3_riya.air_agent.load_dotenv", lambda *args, **kwargs: False)
 
     from step3_riya.air_agent import AirAgentConfigurationError, create_air_agent
 
@@ -126,6 +128,7 @@ def test_create_ship_agent_requires_configuration(
 ):
     _clear_routing_env(monkeypatch)
     _reload_step3_modules()
+    monkeypatch.setattr("step3_riya.ship_agent.load_dotenv", lambda *args, **kwargs: False)
 
     from step3_riya.ship_agent import ShipAgentConfigurationError, create_ship_agent
 
@@ -241,6 +244,8 @@ def test_air_agent_factory_uses_mailbox_mode():
 
     assert agent.name == "aerofreight-air-subagent"
     assert agent._use_mailbox is True
+    assert agent._enable_agent_inspector is False
+    assert agent._rest_handlers == {}
     assert agent.mailbox_client is not None
     assert air_quote_protocol.digest in agent.protocols
 
@@ -253,6 +258,8 @@ def test_ship_agent_factory_uses_mailbox_mode():
 
     assert agent.name == "aerofreight-ship-subagent"
     assert agent._use_mailbox is True
+    assert agent._enable_agent_inspector is False
+    assert agent._rest_handlers == {}
     assert agent.mailbox_client is not None
     assert ship_quote_protocol.digest in agent.protocols
 
@@ -269,6 +276,8 @@ def test_routing_agent_factory_uses_mailbox_mode():
 
     assert agent.name == "aerofreight-riya-routing"
     assert agent._use_mailbox is True
+    assert agent._enable_agent_inspector is False
+    assert agent._rest_handlers == {}
     assert agent.mailbox_client is not None
     assert routing_protocol.digest in agent.protocols
 
@@ -293,6 +302,8 @@ def test_mailbox_agents_do_not_require_explicit_port_configuration():
 
     for agent in (air, ship, router):
         assert agent._use_mailbox is True
+        assert agent._enable_agent_inspector is False
+        assert agent._rest_handlers == {}
         assert len(agent._endpoints) == 1
         assert agent._endpoints[0].url == mailbox_url
         assert "127.0.0.1" not in agent._endpoints[0].url

@@ -332,6 +332,7 @@ def create_routing_agent(
         seed=seed,
         mailbox=True,
         publish_agent_details=True,
+        enable_agent_inspector=False,
     )
     _register_routing_handlers(agent, air_agent_address, ship_agent_address)
     return agent
