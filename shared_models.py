@@ -89,8 +89,22 @@ class RouteData(_Base):
 
 
 # --------------------------------------------------------------------------- #
-# STEP 4: ANIKET'S OUTPUT  (Compliance & Document Agent)
+# STEP 4: ANIKET'S INPUT + OUTPUT  (Compliance & Document Agent)
 # --------------------------------------------------------------------------- #
+class ComplianceRequest(_Base):
+    """Orchestrator -> Aniket: the accumulated 'Global State' the compliance
+    agent needs to pick the right paperwork (Inputs + Ashwin + Riya).
+
+    Additive contract (does not alter the frozen output models): the
+    orchestrator nests the three upstream artifacts so Aniket can key forms off
+    the cargo, the chosen transport mode, and the countries on the route.
+    """
+
+    shipment: ShipmentRequest  # Step 1 — original request (cargo, value, route)
+    econ: EconData             # Step 2 — Ashwin (high-value / luxury flags)
+    route: RouteData           # Step 3 — Riya (selected_mode, countries_visited)
+
+
 class DocTemplates(_Base):
     required_form_names: List[str]
     blank_form_structures: dict  # The empty templates found via browser
