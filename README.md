@@ -46,6 +46,7 @@ cd AeroFreight-AI
 python -m venv .venv && source .venv/bin/activate   # or .venv\Scripts\activate on Windows
 pip install -r requirements.txt
 ```
+**NOTE:** You will need to refer to the fetchai-asi branch if you want to run the code specifically backend based only using the ASI ONE Platform.
 
 ### 2. Configuration
 
